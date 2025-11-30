@@ -18,8 +18,7 @@ Install (recommended in a venv):
 pip install numpy nibabel PyQt5 matplotlib pyvista pyvistaqt
 
 Run:
-python 3D_and_Orthogonal_Viewer.py /path/to/volume.nii
-Or load a .npy file. If no path provided, a small demo volume will be generated.
+python app.py
 
 Notes:
 - This is a single-file example intended to be a practical starting point. For very large volumes
@@ -58,7 +57,7 @@ class SliceCanvas(FigureCanvas):
         self.pressed = False
         self.on_drag = None  # callback (xpix, ypix, event) -> None
         self.cid_release = None
-        self.on_scroll = None   # new callback: (step, event)
+        self.on_scroll = None   # callback: (step, event)
 
     def show_slice(self, slice2d):
         """slice2d: HxW (grayscale) or HxWx3 (RGB)"""
@@ -128,9 +127,6 @@ class ViewerApp(QtWidgets.QMainWindow):
         super().__init__()
         self.setWindowTitle('3D + Orthogonal Viewer')
         self.volume = volume.astype(float)
-        self.volume = np.rot90(self.volume, k=-1, axes=(1, 2))
-        self.volume = np.rot90(self.volume, k=-1, axes=(0, 1))
-        self.volume = np.rot90(self.volume, k=1, axes=(1, 2))
         self.affine = affine
         self.is_rgb = (self.volume.ndim == 4 and self.volume.shape[-1] == 3)
          # Make volume shape consistent: (X,Y,Z,[3])
@@ -145,9 +141,9 @@ class ViewerApp(QtWidgets.QMainWindow):
         grid = QtWidgets.QGridLayout(central)
 
         # Matplotlib canvases
-        self.axial_canvas = SliceCanvas(self, title="1",)
-        self.coronal_canvas = SliceCanvas(self, title="2",)
-        self.sagittal_canvas = SliceCanvas(self, title="3",)
+        self.axial_canvas = SliceCanvas(self, title="axial",)
+        self.coronal_canvas = SliceCanvas(self, title="coronal",)
+        self.sagittal_canvas = SliceCanvas(self, title="saggital",)
 
         self.axial_canvas.enable_interaction()
         self.coronal_canvas.enable_interaction()
@@ -183,20 +179,23 @@ class ViewerApp(QtWidgets.QMainWindow):
 
         # initialize images and 3D
         self._update_all()
-        # self._init_3d()
+        self._init_3d()
 
     def _update_status(self):
         self.status.showMessage(f'pos (x,y,z): {self.pos[0]}, {self.pos[1]}, {self.pos[2]}')
 
     # ---------------- 2D slices ----------------
-    def _get_axial(self):
-        return self.volume[self.pos[0], :, :, :] if self.is_rgb else self.volume[self.pos[0], :, :]
+    def _get_axial(self) -> np.ndarray:
+        slice2d = self.volume[:, :, self.pos[2], :] if self.is_rgb else self.volume[:, :, self.pos[2]]
+        return np.fliplr(slice2d.T)  # transpose for correct orientation
 
-    def _get_coronal(self):
-        return self.volume[:, self.pos[1], :, :] if self.is_rgb else self.volume[:, self.pos[1], :]
+    def _get_coronal(self) -> np.ndarray:
+        slice2d = self.volume[:, self.pos[1], :, :] if self.is_rgb else self.volume[:, self.pos[1], :]
+        return np.fliplr(slice2d.T)  # transpose for correct orientation
 
-    def _get_sagittal(self):
-        return self.volume[:, :, self.pos[2], :] if self.is_rgb else self.volume[:, :, self.pos[2]]
+    def _get_sagittal(self) -> np.ndarray:
+        slice2d = self.volume[self.pos[0], :, :, :] if self.is_rgb else self.volume[self.pos[0], :, :]
+        return np.fliplr(slice2d.T)  # transpose for correct orientation
 
     def _update_all(self):
         # update 2D images
@@ -205,9 +204,9 @@ class ViewerApp(QtWidgets.QMainWindow):
         self.sagittal_canvas.show_slice(self._get_sagittal())
 
         # update crosshairs: compute pixel coords for each canvas
-        self.axial_canvas.set_crosshair(self.pos[2], self.pos[1])
-        self.coronal_canvas.set_crosshair(self.pos[2], self.pos[0])
-        self.sagittal_canvas.set_crosshair(self.pos[1], self.pos[0])
+        self.axial_canvas.set_crosshair(self.shape[0] - self.pos[0], self.pos[1])
+        self.coronal_canvas.set_crosshair(self.shape[0] - self.pos[0], self.pos[2])
+        self.sagittal_canvas.set_crosshair(self.shape[1] - self.pos[1], self.pos[2])
 
         # update 3D marker
         self._update_3d_marker()
@@ -217,28 +216,28 @@ class ViewerApp(QtWidgets.QMainWindow):
     def _on_axial_drag(self, xpix, ypix, event):
         if xpix is None or ypix is None:
             return
+        self.pos[0] = np.clip(int(self.shape[0] - round(xpix)), 0, self.shape[0]-1)
         self.pos[1] = np.clip(int(round(ypix)), 0, self.shape[1]-1)
-        self.pos[2] = np.clip(int(round(xpix)), 0, self.shape[2]-1)
         self._update_all()
 
     def _on_coronal_drag(self, xpix, ypix, event):
         if xpix is None or ypix is None:
             return
-        self.pos[0] = np.clip(int(round(ypix)), 0, self.shape[0]-1)
-        self.pos[2] = np.clip(int(round(xpix)), 0, self.shape[2]-1)
+        self.pos[0] = np.clip(int(self.shape[0] - round(xpix)), 0, self.shape[0]-1)
+        self.pos[2] = np.clip(int(round(ypix)), 0, self.shape[2]-1)
         self._update_all()
 
     def _on_sagittal_drag(self, xpix, ypix, event):
         if xpix is None or ypix is None:
             return
-        self.pos[1] = np.clip(int(round(xpix)), 0, self.shape[1]-1)
-        self.pos[0] = np.clip(int(round(ypix)), 0, self.shape[0]-1)
+        self.pos[1] = np.clip(int(self.shape[1] - round(xpix)), 0, self.shape[1]-1)
+        self.pos[2] = np.clip(int(round(ypix)), 0, self.shape[2]-1)
         self._update_all()
 
     # ---------------- Scroll callbacks ----------------
     def _on_axial_scroll(self, step, event):
-        # axial = X axis slice
-        self.pos[0] = np.clip(self.pos[0] + step, 0, self.shape[0]-1)
+        # axial = Z axis slice
+        self.pos[2] = np.clip(self.pos[2] + step, 0, self.shape[2]-1)
         self._update_all()
 
     def _on_coronal_scroll(self, step, event):
@@ -247,98 +246,41 @@ class ViewerApp(QtWidgets.QMainWindow):
         self._update_all()
 
     def _on_sagittal_scroll(self, step, event):
-        # sagittal = Z axis slice
-        self.pos[2] = np.clip(self.pos[2] + step, 0, self.shape[2]-1)
+        # sagittal = X axis slice
+        self.pos[0] = np.clip(self.pos[0] + step, 0, self.shape[0]-1)
         self._update_all()
 
     # ----------------- PyVista 3D -----------------
     def _init_3d(self):
-        self.pv_widget.clear()
-        vol = self.volume.astype(np.float32)
-        if self.is_rgb:
-            # RGB: PyVista expects CxHxW flattened; convert later if needed
-            vol_max = vol.max()
-            if vol_max > 1: vol /= 255.0
-
-        grid = pv.ImageData()
-
-        grid.dimensions = np.array(self.shape[::-1])
-        voxel_sizes = (1,1,1)
-        if self.affine is not None:
-            voxel_sizes = np.sqrt(np.sum(self.affine[:3,:3]**2, axis=0))
-        grid.spacing = tuple(voxel_sizes[::-1])
-        grid.origin = (0,0,0)
-
-        flat = vol.flatten(order='F')
-        grid.point_data.set_scalars(flat, "values")
-
-        self.vol_actor = self.pv_widget.add_volume(grid, cmap='gray' if not self.is_rgb else None,
-                                                   opacity='sigmoid_6')
-        self.vol_actor.GetProperty().SetInterpolationTypeToLinear() # Set interpolation to linear for smooth rendering
-
-        self.marker = pv.Sphere(radius=max(self.shape) / 80.0,
-                                center=self.pos)
-        self.marker_actor = self.pv_widget.add_mesh(self.marker, color='red')
-        self.pv_widget.reset_camera()
-        self.pv_widget.render()
+        pass
 
     def _update_3d_marker(self):
-        if hasattr(self, 'marker_actor'):
-            self.marker_actor.SetPosition(self.pos)
-            self.pv_widget.render()
+        pass
 
     def _on_opacity_change(self, value):
-        alpha = value / 100.0
-        if hasattr(self, "vol_actor"):
-            prop = self.vol_actor.GetProperty()
-            opacity_fn = prop.GetScalarOpacity()
-            opacity_fn.RemoveAllPoints()
-            opacity_fn.AddPoint(0, 0.0)
-            opacity_fn.AddPoint(255, alpha)
-            self.pv_widget.render()
+        pass
 
 
 # Utility loader
 def load_volume(path):
     ext = os.path.splitext(path)[1].lower()
     if ext in ['.nii', '.gz', '.nii.gz']:
-        img = nib.load(path)
-        data = img.get_fdata(dtype=np.float32)
-        aff = img.affine
+        nii = nib.load(path)
+        data = nii.get_fdata(dtype=np.float32)
+        aff = nii.affine
         return data, aff
-    elif ext == '.npy':
-        data = np.load(path)
-        return data, None
     else:
         raise ValueError('Unsupported extension: ' + ext)
 
-
-def main(argv):
-    if len(argv) > 1:
-        path = argv[1]
-        vol, aff = load_volume(path)
-    else:
-        # demo: create a synthetic 3D gaussian
-        print('No path provided — creating demo volume')
-        x = np.linspace(-1,1,128)
-        X,Y,Z = np.meshgrid(x,x,x, indexing='xy')
-        vol = np.exp(-(X**2+Y**2+Z**2)*8)
-        aff = None
-
-    # Ensure shape is (Z,Y,X). If user provides (X,Y,Z) try to detect and transpose
-    # if vol.ndim != 3 or vol.ndim != 4:
-    #     raise ValueError('Input volume must be 3D or 4D')
-    # Heuristic: if first dim is small (<10) try to reorder. But for now assume (Z,Y,X)
+def main():
+    vol, aff = load_volume("./subject_001_T1_native_restored.nii.gz")
+    print(f"{aff=}")
+    print(f"{vol.shape=}")
 
     app = QtWidgets.QApplication(sys.argv)
     viewer = ViewerApp(vol, affine=aff)
     viewer.show()
     sys.exit(app.exec_())
 
-
 if __name__ == '__main__':
-    main(sys.argv)
-
-# python app.py .\input_mni305_registered.nii.gz
-# python app.py .\evaluation_result_01_colored.nii.gz
-# python app.py .\evaluation_result_01_colored_sepecific_labels.nii.gz
+    main()
