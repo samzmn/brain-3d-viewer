@@ -31,15 +31,47 @@ import sys
 import os
 import numpy as np
 import nibabel as nib
-from PyQt5 import QtWidgets
+from PyQt5 import QtWidgets, QtCore, QtGui
 from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
 from matplotlib.figure import Figure
-import pyvista as pv
-from pyvistaqt import QtInteractor
-from PyQt5 import QtCore
 import vtk
 
 
+# ------------------------------------------------------------
+# LabelPanel: shows label colors + selection
+# ------------------------------------------------------------
+class LabelPanel(QtWidgets.QWidget):
+    label_selected = QtCore.pyqtSignal(int)
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        layout = QtWidgets.QVBoxLayout(self)
+        layout.setAlignment(QtCore.Qt.AlignTop)
+
+        self.label_list = QtWidgets.QListWidget()
+        self.label_list.itemClicked.connect(self.on_item_clicked)
+
+        self.current_label_display = QtWidgets.QLabel("Selected Label: None")
+
+        layout.addWidget(QtWidgets.QLabel("Labels:"))
+        layout.addWidget(self.label_list)
+        layout.addWidget(self.current_label_display)
+
+    def set_labels(self, seg_colors):
+        self.label_list.clear()
+        for label, color in seg_colors.items():
+            item = QtWidgets.QListWidgetItem(f"Label {label}")
+            pix = QtGui.QPixmap(20,20)
+            pix.fill(QtGui.QColor(*(int(c*255) for c in color)))
+            item.setIcon(QtGui.QIcon(pix))
+            item.setData(QtCore.Qt.UserRole, label)
+            self.label_list.addItem(item)
+
+    def on_item_clicked(self, item):
+        label = item.data(QtCore.Qt.UserRole)
+        self.current_label_display.setText(f"Selected Label: {label}")
+        self.label_selected.emit(label)
+        
 class SliceCanvas(FigureCanvas):
     """A matplotlib canvas showing a single 2D slice with a red crosshair."""
     def __init__(self, parent=None, title="", figsize=(32,32)):
@@ -49,6 +81,7 @@ class SliceCanvas(FigureCanvas):
         self.ax = fig.add_subplot(111)
         self.ax.set_title(title)
         self.im = None
+        self.seg = None
         self.vline = None
         self.hline = None
         self.cid_press = None
@@ -59,7 +92,9 @@ class SliceCanvas(FigureCanvas):
         self.cid_release = None
         self.on_scroll = None   # callback: (step, event)
 
-    def show_slice(self, slice2d):
+        fig.tight_layout()
+
+    def show_slice(self, slice2d, seg_slice2d=None):
         """slice2d: HxW (grayscale) or HxWx3 (RGB)"""
         if slice2d.ndim == 3 and slice2d.shape[2] == 3:
             slice2d = slice2d.astype(float)
@@ -76,6 +111,17 @@ class SliceCanvas(FigureCanvas):
             self.im.set_data(slice2d)
             if cmap:
                 self.im.set_clim(np.nanmin(slice2d), np.nanmax(slice2d))
+        
+        if self.seg is None:
+            if seg_slice2d is not None:
+                self.seg = self.ax.imshow(seg_slice2d, origin='lower', interpolation='nearest')
+        else:
+            if seg_slice2d is not None:
+                self.seg.set_data(seg_slice2d)
+            else:
+                self.seg.remove()
+                self.seg = None
+
         self.draw_idle()
 
     def set_crosshair(self, x, y):
@@ -125,7 +171,12 @@ class SliceCanvas(FigureCanvas):
 class ViewerApp(QtWidgets.QMainWindow):
     def __init__(self, volume, affine=None):
         super().__init__()
-        self.setWindowTitle('3D + Orthogonal Viewer')
+        self.setWindowTitle('Brain Viewer with Segmentation Tools')
+
+        self.seg_img = None
+        self.seg_rgba = None
+        self.seg_colors = {}
+
         self.volume = volume.astype(float)
         self.affine = affine
         self.is_rgb = (self.volume.ndim == 4 and self.volume.shape[-1] == 3)
@@ -138,14 +189,46 @@ class ViewerApp(QtWidgets.QMainWindow):
         # ----------------------- TOP TOOL BAR -----------------------
         toolbar = QtWidgets.QToolBar("MainToolbar")
         self.addToolBar(toolbar)
+
         load_btn = QtWidgets.QAction("Load NIfTI...", self)
         load_btn.triggered.connect(self._load_new_volume)
         toolbar.addAction(load_btn)
 
-        # main widget and layout
+        load_seg_btn = QtWidgets.QAction("Load Segmentation", self)
+        load_seg_btn.triggered.connect(self._load_segmentation_nifti)
+        toolbar.addAction(load_seg_btn)
+
+        save_seg_btn = QtWidgets.QAction("Save Segmentation", self)
+        save_seg_btn.triggered.connect(self._save_segmentation_nifti)
+        toolbar.addAction(save_seg_btn)
+
+        self.seg_checkbox = QtWidgets.QCheckBox("Show Segmentation")
+        self.seg_checkbox.setChecked(True)
+        self.seg_checkbox.stateChanged.connect(self._toggle_seg_visibility)
+        toolbar.addWidget(self.seg_checkbox)
+
+        self.opacity_slider = QtWidgets.QSlider(QtCore.Qt.Horizontal)
+        self.opacity_slider.setMinimum(0)
+        self.opacity_slider.setMaximum(100)
+        self.opacity_slider.setValue(50)
+        self.opacity_slider.setSingleStep(10)
+        self.opacity_slider.setPageStep(10)
+        self.opacity_slider.valueChanged.connect(self._change_opacity)
+        toolbar.addWidget(QtWidgets.QLabel("Opacity"))
+        toolbar.addWidget(self.opacity_slider)
+
+        # ----------------------- MAIN WIDGET and layout -----------------------
         central = QtWidgets.QWidget()
         self.setCentralWidget(central)
-        grid = QtWidgets.QGridLayout(central)
+        layout = QtWidgets.QHBoxLayout(central)
+
+        # ---------------- Left panel (labels) ----------------------
+        self.label_panel = LabelPanel()
+        layout.addWidget(self.label_panel)
+
+        # ---------------- 2D views container ---------------------
+        grid = QtWidgets.QGridLayout()
+        layout.addLayout(grid)
 
         # ---------- Sliders for each orientation ----------
         self.axial_slider = QtWidgets.QSlider(QtCore.Qt.Horizontal)
@@ -184,20 +267,8 @@ class ViewerApp(QtWidgets.QMainWindow):
         grid.addWidget(self.coronal_slider, 0, 1)
         grid.addWidget(self.axial_canvas,   1, 0)
         grid.addWidget(self.coronal_canvas, 1, 1)
-
         grid.addWidget(self.sagittal_slider, 2, 0)
         grid.addWidget(self.sagittal_canvas, 3, 0)
-
-        # PyVista 3D widget
-        self.pv_widget = QtInteractor(self)
-        grid.addWidget(self.pv_widget.interactor, 3, 1)
-
-        # Opacity slider for 3D volume
-        self.opacity_slider = QtWidgets.QSlider(QtCore.Qt.Horizontal)
-        self.opacity_slider.setRange(1, 100)   # 1% to 100%
-        self.opacity_slider.setValue(60)       # default opacity
-        self.opacity_slider.valueChanged.connect(self._on_opacity_change)
-        grid.addWidget(self.opacity_slider, 4, 1)
 
         # status bar text
         self.status = self.statusBar()
@@ -205,29 +276,51 @@ class ViewerApp(QtWidgets.QMainWindow):
 
         # initialize images and 3D
         self._update_all()
-        self._init_3d()
 
     def _update_status(self):
         self.status.showMessage(f'pos (x,y,z): {self.pos[0]}, {self.pos[1]}, {self.pos[2]}')
 
     # ---------------- 2D slices ----------------
+    def _make_seg_overlay(self, seg2d):
+        """Given a seg2d RGBA slice, apply opacity and return overlay."""
+        overlay = seg2d.copy()
+        overlay[..., 3] *= (self.opacity_slider.value() / 100.0) # Alpha
+        overlay = np.transpose(overlay, (1, 0, 2))
+        overlay = np.fliplr(overlay)
+        return overlay
+
     def _get_axial(self) -> np.ndarray:
         slice2d = self.volume[:, :, self.pos[2], :] if self.is_rgb else self.volume[:, :, self.pos[2]]
-        return np.fliplr(slice2d.T)  # transpose for correct orientation
+        slice2d = np.fliplr(slice2d.T)  # transpose for correct orientation
+        if self.seg_img is not None and self.seg_checkbox.isChecked():
+            seg_slice2d = self._make_seg_overlay(self.seg_rgba[:, :, self.pos[2]])
+        else:
+            seg_slice2d = None
+        return slice2d, seg_slice2d
 
     def _get_coronal(self) -> np.ndarray:
         slice2d = self.volume[:, self.pos[1], :, :] if self.is_rgb else self.volume[:, self.pos[1], :]
-        return np.fliplr(slice2d.T)  # transpose for correct orientation
+        slice2d = np.fliplr(slice2d.T)  # transpose for correct orientation
+        if self.seg_img is not None and self.seg_checkbox.isChecked():
+            seg_slice2d = self._make_seg_overlay(self.seg_rgba[:, self.pos[1], :])
+        else:
+            seg_slice2d = None
+        return slice2d, seg_slice2d
 
     def _get_sagittal(self) -> np.ndarray:
         slice2d = self.volume[self.pos[0], :, :, :] if self.is_rgb else self.volume[self.pos[0], :, :]
-        return np.fliplr(slice2d.T)  # transpose for correct orientation
+        slice2d = np.fliplr(slice2d.T)  # transpose for correct orientation
+        if self.seg_img is not None and self.seg_checkbox.isChecked():
+            seg_slice2d = self._make_seg_overlay(self.seg_rgba[self.pos[0], :, :])
+        else:
+            seg_slice2d = None
+        return slice2d, seg_slice2d
 
     def _update_all(self):
         # update 2D images
-        self.axial_canvas.show_slice(self._get_axial())
-        self.coronal_canvas.show_slice(self._get_coronal())
-        self.sagittal_canvas.show_slice(self._get_sagittal())
+        self.axial_canvas.show_slice(*self._get_axial())
+        self.coronal_canvas.show_slice(*self._get_coronal())
+        self.sagittal_canvas.show_slice(*self._get_sagittal())
 
         # update crosshairs: compute pixel coords for each canvas
         self.axial_canvas.set_crosshair(self.shape[0] - self.pos[0], self.pos[1])
@@ -235,7 +328,6 @@ class ViewerApp(QtWidgets.QMainWindow):
         self.sagittal_canvas.set_crosshair(self.shape[1] - self.pos[1], self.pos[2])
 
         # update 3D marker
-        self._update_3d_marker()
         self._update_status()
 
         # sync sliders with pos[]
@@ -323,35 +415,63 @@ class ViewerApp(QtWidgets.QMainWindow):
 
         self._update_all()
 
-    # ----------------- PyVista 3D -----------------
-    def _init_3d(self):
-        pass
+    def _load_segmentation_nifti(self):
+        path, _ = QtWidgets.QFileDialog.getOpenFileName(self, "Load Segmentation", "", "NIfTI (*.nii *.nii.gz)")
+        if not path:
+            return
+        
+        data, aff = load_volume(path)
+        self.seg_img = data.astype(int)
+        labels = np.unique(self.seg_img)
+        rng = np.random.default_rng(0)
+        self.seg_colors = {
+            l: tuple(rng.random(3)) for l in labels if l != 0
+        }
+        self.label_panel.set_labels(self.seg_colors)
+        # PRECOMPUTE RGBA SEGMENTATION
+        h, w, d = self.seg_img.shape
+        self.seg_rgba = np.zeros((h, w, d, 4), dtype=np.float32)
 
-    def _update_3d_marker(self):
-        pass
+        for l, color in self.seg_colors.items():
+            mask = (self.seg_img == l)
+            self.seg_rgba[mask, :3] = color
+            self.seg_rgba[mask,  3] = 1.0   # alpha = 1 initially
+        self._update_all()
 
-    def _on_opacity_change(self, value):
-        pass
+    def _save_segmentation_nifti(self):
+        if self.seg_img is None:
+            return
+        path, _ = QtWidgets.QFileDialog.getSaveFileName(self, "Save Segmentation", "", "NIfTI (*.nii *.nii.gz)")
+        if not path:
+            return
+        img = nib.Nifti1Image(self.seg_img, affine=self.affine)
+        nib.save(img, path)
+
+    def _toggle_seg_visibility(self, state):
+        self._update_all()
+
+    def _change_opacity(self, value):
+        self._update_all()
 
 
 # Utility loader
-def load_volume(path):
+def load_volume(path, dtype=np.float32):
     base, ext = os.path.splitext(path)
     if ext == '.gz' and base.endswith('.nii'):
         ext = '.nii.gz'
     ext = ext.lower()
     if ext in ['.nii', '.nii.gz']:
         nii = nib.load(path)
-        data = nii.get_fdata(dtype=np.float32)
+        data = nii.get_fdata(dtype=dtype)
         aff = nii.affine
+        print(f"{aff=}")
+        print(f"{data.shape=}")
         return data, aff
     else:
         raise ValueError('Unsupported extension: ' + ext)
 
 def main():
     vol, aff = load_volume("./subject_001_T1_native_restored.nii.gz")
-    print(f"{aff=}")
-    print(f"{vol.shape=}")
 
     app = QtWidgets.QApplication(sys.argv)
     viewer = ViewerApp(vol, affine=aff)
