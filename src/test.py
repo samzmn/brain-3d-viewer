@@ -10,10 +10,12 @@ from pyvistaqt import QtInteractor
 from PyQt5 import QtCore
 import vtk
 
+pv.set_plot_theme("document")  # optional nicer defaults
+
 
 class SliceCanvas(FigureCanvas):
     """A matplotlib canvas showing a single 2D slice with a red crosshair."""
-    def __init__(self, parent=None, title="", figsize=(32,32)):
+    def __init__(self, parent=None, title="", figsize=(6, 6)):
         fig = Figure(figsize=figsize)
         super().__init__(fig)
         self.setParent(parent)
@@ -28,7 +30,7 @@ class SliceCanvas(FigureCanvas):
         self.pressed = False
         self.on_drag = None  # callback (xpix, ypix, event) -> None
         self.cid_release = None
-        self.on_scroll = None   # new callback: (step, event)
+        self.on_scroll = None   # callback: (step, event)
 
     def show_slice(self, slice2d):
         """slice2d: HxW (grayscale) or HxWx3 (RGB)"""
@@ -41,7 +43,7 @@ class SliceCanvas(FigureCanvas):
             cmap = 'gray'
 
         if self.im is None:
-            self.im = self.ax.imshow(slice2d, cmap=cmap, origin='upper', interpolation='nearest')
+            self.im = self.ax.imshow(slice2d, cmap=cmap, origin='lower', interpolation='nearest')
             self.ax.axis('off')
         else:
             self.im.set_data(slice2d)
@@ -55,8 +57,8 @@ class SliceCanvas(FigureCanvas):
             self.vline = self.ax.axvline(x, color='r')
             self.hline = self.ax.axhline(y, color='r')
         else:
-            self.vline.set_xdata([x,x])
-            self.hline.set_ydata([y,y])
+            self.vline.set_xdata([x, x])
+            self.hline.set_ydata([y, y])
         self.draw_idle()
 
     def enable_interaction(self):
@@ -86,6 +88,8 @@ class SliceCanvas(FigureCanvas):
     def disable_interaction(self):
         if self.cid_press: self.mpl_disconnect(self.cid_press)
         if self.cid_move: self.mpl_disconnect(self.cid_move)
+        if self.cid_release: self.mpl_disconnect(self.cid_release)
+        if self.cid_scroll: self.mpl_disconnect(self.cid_scroll)
         self.pressed = False
 
     def _on_scroll(self, event):
@@ -93,28 +97,33 @@ class SliceCanvas(FigureCanvas):
             step = 1 if event.button == 'up' else -1
             self.on_scroll(step, event)
 
+
 class ViewerApp(QtWidgets.QMainWindow):
     def __init__(self, volume, affine=None):
         super().__init__()
         self.setWindowTitle('3D + Orthogonal Viewer')
-        self.volume = volume.astype(float)
+        # ensure float and C-order for numpy operations
+        self.volume = np.asarray(volume, dtype=float)
         self.affine = affine
         self.is_rgb = (self.volume.ndim == 4 and self.volume.shape[-1] == 3)
-         # Make volume shape consistent: (X,Y,Z,[3])
+        # Make volume shape consistent: (X,Y,Z,[3])
         self.shape = self.volume.shape[:3]  # (X, Y, Z)
 
         # initial crosshair at center
-        self.pos = [s // 2 for s in self.shape]  # initial crosshair at center
+        self.pos = [int(s // 2) for s in self.shape]
+
+        # compute spacing from affine if available
+        self.spacing = self._compute_spacing_from_affine(affine)
 
         # main widget and layout
         central = QtWidgets.QWidget()
         self.setCentralWidget(central)
         grid = QtWidgets.QGridLayout(central)
 
-        # Matplotlib canvases
-        self.axial_canvas = SliceCanvas(self, title="axial",)
-        self.coronal_canvas = SliceCanvas(self, title="coronal",)
-        self.sagittal_canvas = SliceCanvas(self, title="sagittal",)
+        # Matplotlib canvases (reasonable size)
+        self.axial_canvas = SliceCanvas(self, title="axial", figsize=(5, 5))
+        self.coronal_canvas = SliceCanvas(self, title="coronal", figsize=(5, 5))
+        self.sagittal_canvas = SliceCanvas(self, title="sagittal", figsize=(5, 5))
 
         self.axial_canvas.enable_interaction()
         self.coronal_canvas.enable_interaction()
@@ -144,27 +153,52 @@ class ViewerApp(QtWidgets.QMainWindow):
         grid.addWidget(self.pv_widget.interactor, 1, 1)
         grid.addWidget(self.opacity_slider, 2, 1)  # slider under the 3D view
 
+        # allow the 3D view to expand more
+        grid.setRowStretch(1, 2)
+        grid.setColumnStretch(1, 2)
+
         # status bar text
         self.status = self.statusBar()
         self._update_status()
+
+        # references for pyvista actors
+        self._pv_grid = None
+        self._vol_actor = None
+        self._marker_actor = None
 
         # initialize images and 3D
         self._update_all()
         self._init_3d()
 
+    def _compute_spacing_from_affine(self, affine):
+        if affine is None:
+            return (1.0, 1.0, 1.0)
+        # voxel sizes are norms of the first 3 columns
+        sx = np.linalg.norm(affine[:3, 0])
+        sy = np.linalg.norm(affine[:3, 1])
+        sz = np.linalg.norm(affine[:3, 2])
+        # guard zeros
+        sx = sx if sx > 0 else 1.0
+        sy = sy if sy > 0 else 1.0
+        sz = sz if sz > 0 else 1.0
+        return (sx, sy, sz)
+
     def _update_status(self):
         self.status.showMessage(f'pos (x,y,z): {self.pos[0]}, {self.pos[1]}, {self.pos[2]}')
 
     # ---------------- 2D slices ----------------
-    def _get_sagittal(self):
-        return self.volume[self.pos[0], :, :, :] if self.is_rgb else self.volume[self.pos[0], :, :]
+    def _get_axial(self) -> np.ndarray:
+        slice2d = self.volume[:, :, self.pos[2], :] if self.is_rgb else self.volume[:, :, self.pos[2]]
+        return np.fliplr(slice2d.T)  # transpose for correct orientation
 
-    def _get_coronal(self):
-        return self.volume[:, self.pos[1], :, :] if self.is_rgb else self.volume[:, self.pos[1], :]
+    def _get_coronal(self) -> np.ndarray:
+        slice2d = self.volume[:, self.pos[1], :, :] if self.is_rgb else self.volume[:, self.pos[1], :]
+        return np.fliplr(slice2d.T)  # transpose for correct orientation
 
-    def _get_axial(self):
-        return self.volume[:, :, self.pos[2], :] if self.is_rgb else self.volume[:, :, self.pos[2]]
-    
+    def _get_sagittal(self) -> np.ndarray:
+        slice2d = self.volume[self.pos[0], :, :, :] if self.is_rgb else self.volume[self.pos[0], :, :]
+        return np.fliplr(slice2d.T)  # transpose for correct orientation
+
     def _update_all(self):
         # update 2D images
         self.axial_canvas.show_slice(self._get_axial())
@@ -172,9 +206,10 @@ class ViewerApp(QtWidgets.QMainWindow):
         self.sagittal_canvas.show_slice(self._get_sagittal())
 
         # update crosshairs: compute pixel coords for each canvas
-        self.axial_canvas.set_crosshair(self.pos[2], self.pos[1])
-        self.coronal_canvas.set_crosshair(self.pos[2], self.pos[0])
-        self.sagittal_canvas.set_crosshair(self.pos[1], self.pos[0])
+        # Note: pixel coordinate conversion tuned to how slices are computed above
+        self.axial_canvas.set_crosshair(self.shape[0] - self.pos[0], self.pos[1])
+        self.coronal_canvas.set_crosshair(self.shape[0] - self.pos[0], self.pos[2])
+        self.sagittal_canvas.set_crosshair(self.shape[1] - self.pos[1], self.pos[2])
 
         # update 3D marker
         self._update_3d_marker()
@@ -184,28 +219,28 @@ class ViewerApp(QtWidgets.QMainWindow):
     def _on_axial_drag(self, xpix, ypix, event):
         if xpix is None or ypix is None:
             return
+        self.pos[0] = np.clip(int(self.shape[0] - round(xpix)), 0, self.shape[0]-1)
         self.pos[1] = np.clip(int(round(ypix)), 0, self.shape[1]-1)
-        self.pos[2] = np.clip(int(round(xpix)), 0, self.shape[2]-1)
         self._update_all()
 
     def _on_coronal_drag(self, xpix, ypix, event):
         if xpix is None or ypix is None:
             return
-        self.pos[0] = np.clip(int(round(ypix)), 0, self.shape[0]-1)
-        self.pos[2] = np.clip(int(round(xpix)), 0, self.shape[2]-1)
+        self.pos[0] = np.clip(int(self.shape[0] - round(xpix)), 0, self.shape[0]-1)
+        self.pos[2] = np.clip(int(round(ypix)), 0, self.shape[2]-1)
         self._update_all()
 
     def _on_sagittal_drag(self, xpix, ypix, event):
         if xpix is None or ypix is None:
             return
-        self.pos[1] = np.clip(int(round(xpix)), 0, self.shape[1]-1)
-        self.pos[0] = np.clip(int(round(ypix)), 0, self.shape[0]-1)
+        self.pos[1] = np.clip(int(self.shape[1] - round(xpix)), 0, self.shape[1]-1)
+        self.pos[2] = np.clip(int(round(ypix)), 0, self.shape[2]-1)
         self._update_all()
 
     # ---------------- Scroll callbacks ----------------
     def _on_axial_scroll(self, step, event):
-        # axial = X axis slice
-        self.pos[0] = np.clip(self.pos[0] + step, 0, self.shape[0]-1)
+        # axial = Z axis slice
+        self.pos[2] = np.clip(self.pos[2] + step, 0, self.shape[2]-1)
         self._update_all()
 
     def _on_coronal_scroll(self, step, event):
@@ -214,59 +249,39 @@ class ViewerApp(QtWidgets.QMainWindow):
         self._update_all()
 
     def _on_sagittal_scroll(self, step, event):
-        # sagittal = Z axis slice
-        self.pos[2] = np.clip(self.pos[2] + step, 0, self.shape[2]-1)
+        # sagittal = X axis slice
+        self.pos[0] = np.clip(self.pos[0] + step, 0, self.shape[0]-1)
         self._update_all()
 
     # ----------------- PyVista 3D -----------------
     def _init_3d(self):
         pass
 
-    def _update_3d_marker(self):
+    def _update_3d_marker(self, first=False):
         pass
 
     def _on_opacity_change(self, value):
         pass
 
-
 # Utility loader
 def load_volume(path):
-    ext = os.path.splitext(path)[1].lower()
-    if ext in ['.nii', '.gz', '.nii.gz']:
+    # handle .nii and .nii.gz robustly
+    base, ext = os.path.splitext(path)
+    if ext == '.gz' and base.endswith('.nii'):
+        ext = '.nii.gz'
+    ext = ext.lower()
+    if ext in ['.nii', '.nii.gz']:
         nii = nib.load(path)
-
-        # canonicalize to RAS and get the reoriented array
-        # nii_canon = nib.as_closest_canonical(nii)
         data = nii.get_fdata(dtype=np.float32)
         aff = nii.affine
-
-        # ONE-TIME transform so displayed slices do NOT require per-slice transpose/flip.
-        # This matches the earlier behaviour where you used `.T` + `np.fliplr` for each slice.
-        # Transform: transpose axes (0,2,1) then flip the last axis.
-        # Resulting shape: (X, Z, Y)
-        # data = np.transpose(data, (0, 2, 1))
-        # data = np.flip(data, axis=2)
-        # data = np.rot90(data, k=1, axes=(1,2))
-        # data = np.rot90(data, k=2, axes=(0,1))
-        # data = np.rot90(data, k=2, axes=(1,2))
-        # data = np.flip(data, axis=1)
-        # data = np.rot90(data, k=1, axes=(0,2))
-        # data = np.flip(data, axis=0)
-        # data = np.flip(data, axis=2)
-        # data = np.flip(data, axis=1)
-        # data = np.rot90(data, k=1, axes=(0,2))
-
         return data, aff
-    elif ext == '.npy':
-        data = np.load(path)
-        return data, None
     else:
         raise ValueError('Unsupported extension: ' + ext)
 
 def main():
     vol, aff = load_volume("./subject_001_T1_native_restored.nii.gz")
-    print(aff)
-    print(vol.shape)
+    print(f"{aff=}")
+    print(f"{vol.shape=}")
 
     app = QtWidgets.QApplication(sys.argv)
     viewer = ViewerApp(vol, affine=aff)
@@ -275,3 +290,4 @@ def main():
 
 if __name__ == '__main__':
     main()
+

@@ -135,19 +135,41 @@ class ViewerApp(QtWidgets.QMainWindow):
         # initial crosshair at center
         self.pos = [s // 2 for s in self.shape]  # initial crosshair at center
 
+        # ----------------------- TOP TOOL BAR -----------------------
+        toolbar = QtWidgets.QToolBar("MainToolbar")
+        self.addToolBar(toolbar)
+        load_btn = QtWidgets.QAction("Load NIfTI...", self)
+        load_btn.triggered.connect(self._load_new_volume)
+        toolbar.addAction(load_btn)
+
         # main widget and layout
         central = QtWidgets.QWidget()
         self.setCentralWidget(central)
         grid = QtWidgets.QGridLayout(central)
+
+        # ---------- Sliders for each orientation ----------
+        self.axial_slider = QtWidgets.QSlider(QtCore.Qt.Horizontal)
+        self.axial_slider.setRange(0, self.shape[2] - 1)
+        self.axial_slider.setValue(self.pos[2])
+        self.axial_slider.valueChanged.connect(self._slider_axial)
+
+        self.coronal_slider = QtWidgets.QSlider(QtCore.Qt.Horizontal)
+        self.coronal_slider.setRange(0, self.shape[1] - 1)
+        self.coronal_slider.setValue(self.pos[1])
+        self.coronal_slider.valueChanged.connect(self._slider_coronal)
+
+        self.sagittal_slider = QtWidgets.QSlider(QtCore.Qt.Horizontal)
+        self.sagittal_slider.setRange(0, self.shape[0] - 1)
+        self.sagittal_slider.setValue(self.pos[0])
+        self.sagittal_slider.valueChanged.connect(self._slider_sagittal)
 
         # Matplotlib canvases
         self.axial_canvas = SliceCanvas(self, title="axial",)
         self.coronal_canvas = SliceCanvas(self, title="coronal",)
         self.sagittal_canvas = SliceCanvas(self, title="saggital",)
 
-        self.axial_canvas.enable_interaction()
-        self.coronal_canvas.enable_interaction()
-        self.sagittal_canvas.enable_interaction()
+        for c in (self.axial_canvas, self.coronal_canvas, self.sagittal_canvas):
+            c.enable_interaction()  
 
         self.axial_canvas.on_drag = self._on_axial_drag
         self.coronal_canvas.on_drag = self._on_coronal_drag
@@ -157,21 +179,25 @@ class ViewerApp(QtWidgets.QMainWindow):
         self.coronal_canvas.on_scroll = self._on_coronal_scroll
         self.sagittal_canvas.on_scroll = self._on_sagittal_scroll
 
+        # ----------- layout: slider above each viewer -----------
+        grid.addWidget(self.axial_slider,   0, 0)
+        grid.addWidget(self.coronal_slider, 0, 1)
+        grid.addWidget(self.axial_canvas,   1, 0)
+        grid.addWidget(self.coronal_canvas, 1, 1)
+
+        grid.addWidget(self.sagittal_slider, 2, 0)
+        grid.addWidget(self.sagittal_canvas, 3, 0)
+
         # PyVista 3D widget
         self.pv_widget = QtInteractor(self)
+        grid.addWidget(self.pv_widget.interactor, 3, 1)
 
         # Opacity slider for 3D volume
         self.opacity_slider = QtWidgets.QSlider(QtCore.Qt.Horizontal)
         self.opacity_slider.setRange(1, 100)   # 1% to 100%
         self.opacity_slider.setValue(60)       # default opacity
         self.opacity_slider.valueChanged.connect(self._on_opacity_change)
-
-        # place widgets in grid
-        grid.addWidget(self.axial_canvas, 0, 0)
-        grid.addWidget(self.coronal_canvas, 0, 1)
-        grid.addWidget(self.sagittal_canvas, 1, 0)
-        grid.addWidget(self.pv_widget.interactor, 1, 1)
-        grid.addWidget(self.opacity_slider, 2, 1)  # slider under the 3D view
+        grid.addWidget(self.opacity_slider, 4, 1)
 
         # status bar text
         self.status = self.statusBar()
@@ -212,6 +238,19 @@ class ViewerApp(QtWidgets.QMainWindow):
         self._update_3d_marker()
         self._update_status()
 
+        # sync sliders with pos[]
+        self.axial_slider.blockSignals(True)
+        self.coronal_slider.blockSignals(True)
+        self.sagittal_slider.blockSignals(True)
+
+        self.axial_slider.setValue(self.pos[2])
+        self.coronal_slider.setValue(self.pos[1])
+        self.sagittal_slider.setValue(self.pos[0])
+
+        self.axial_slider.blockSignals(False)
+        self.coronal_slider.blockSignals(False)
+        self.sagittal_slider.blockSignals(False)
+
     # ---------------- Drag callbacks ----------------
     def _on_axial_drag(self, xpix, ypix, event):
         if xpix is None or ypix is None:
@@ -250,6 +289,40 @@ class ViewerApp(QtWidgets.QMainWindow):
         self.pos[0] = np.clip(self.pos[0] + step, 0, self.shape[0]-1)
         self._update_all()
 
+    # ---------------- Slider callbacks ----------------
+    def _slider_axial(self, value):
+        self.pos[2] = value
+        self._update_all()
+
+    def _slider_coronal(self, value):
+        self.pos[1] = value
+        self._update_all()
+
+    def _slider_sagittal(self, value):
+        self.pos[0] = value
+        self._update_all()
+
+    # ---------------- Load new volume ----------------
+    def _load_new_volume(self):
+        path, _ = QtWidgets.QFileDialog.getOpenFileName(
+            self, "Load NIfTI File", "", "NIfTI (*.nii *.nii.gz)"
+        )
+        if not path:
+            return
+
+        data, aff = load_volume(path)
+        self.volume = data.astype(float)
+        self.affine = aff
+        self.shape = self.volume.shape[:3]
+        self.pos = [s // 2 for s in self.shape]
+
+        # update slider ranges
+        self.axial_slider.setRange(0, self.shape[2] - 1)
+        self.coronal_slider.setRange(0, self.shape[1] - 1)
+        self.sagittal_slider.setRange(0, self.shape[0] - 1)
+
+        self._update_all()
+
     # ----------------- PyVista 3D -----------------
     def _init_3d(self):
         pass
@@ -263,8 +336,11 @@ class ViewerApp(QtWidgets.QMainWindow):
 
 # Utility loader
 def load_volume(path):
-    ext = os.path.splitext(path)[1].lower()
-    if ext in ['.nii', '.gz', '.nii.gz']:
+    base, ext = os.path.splitext(path)
+    if ext == '.gz' and base.endswith('.nii'):
+        ext = '.nii.gz'
+    ext = ext.lower()
+    if ext in ['.nii', '.nii.gz']:
         nii = nib.load(path)
         data = nii.get_fdata(dtype=np.float32)
         aff = nii.affine
