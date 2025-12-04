@@ -34,6 +34,7 @@ import nibabel as nib
 from PyQt5 import QtWidgets, QtCore, QtGui
 from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
 from matplotlib.figure import Figure
+import matplotlib.patches as patches
 import vtk
 
 
@@ -75,11 +76,13 @@ class LabelPanel(QtWidgets.QWidget):
 class SliceCanvas(FigureCanvas):
     """A matplotlib canvas showing a single 2D slice with a red crosshair."""
     def __init__(self, parent=None, title="", figsize=(32,32)):
-        fig = Figure(figsize=figsize)
-        super().__init__(fig)
+        self.fig = Figure(figsize=figsize)
+        self.fig.tight_layout()
+        super().__init__(self.fig)
         self.setParent(parent)
-        self.ax = fig.add_subplot(111)
+        self.ax = self.fig.add_subplot(111)
         self.ax.set_title(title)
+        self.shape = None
         self.im = None
         self.seg = None
         self.vline = None
@@ -88,11 +91,29 @@ class SliceCanvas(FigureCanvas):
         self.cid_move = None
         self.cid_scroll = None
         self.pressed = False
-        self.on_drag = None  # callback (xpix, ypix, event) -> None
+        self.on_drag = None # callback (xpix, ypix, event) -> None
         self.cid_release = None
-        self.on_scroll = None   # callback: (step, event)
+        self.on_scroll = None # callback: (step, event)
 
-        fig.tight_layout()
+        self.is_focused = False
+        self.zoom_enabled = False # controlled by ViewerApp checkbox
+        self.zoom_scale = 1.0 # current zoom factor
+        self.prev_drag = None  # for panning
+
+        self.focus_rect = patches.Rectangle(
+            (0, 0), 1, 1,
+            linewidth=4.0,
+            edgecolor=(1, 0, 0, 0.9),
+            facecolor="none",
+            transform=self.ax.transAxes,   # important: match axes coordinates
+            zorder=1000,
+            visible=False
+        )
+        self.ax.add_patch(self.focus_rect)
+    
+    def draw_focus_border(self):
+        self.focus_rect.set_visible(self.is_focused)
+        self.draw_idle()
 
     def show_slice(self, slice2d, seg_slice2d=None):
         """slice2d: HxW (grayscale) or HxWx3 (RGB)"""
@@ -104,9 +125,12 @@ class SliceCanvas(FigureCanvas):
         else:
             cmap = 'gray'
 
+        if self.shape is None:
+            self.shape = slice2d.shape[:2]
+
         if self.im is None:
-            self.im = self.ax.imshow(slice2d, cmap=cmap, origin='lower', interpolation='nearest')
             self.ax.axis('off')
+            self.im = self.ax.imshow(slice2d, cmap=cmap, origin='lower', interpolation='nearest')
         else:
             self.im.set_data(slice2d)
             if cmap:
@@ -140,33 +164,120 @@ class SliceCanvas(FigureCanvas):
         self.cid_release = self.mpl_connect('button_release_event', self._on_release)
         self.cid_scroll = self.mpl_connect('scroll_event', self._on_scroll)
 
+    def disable_interaction(self):
+        if self.cid_press: self.mpl_disconnect(self.cid_press)
+        if self.cid_move: self.mpl_disconnect(self.cid_move)
+        self.pressed = False
+
     def _on_press(self, event):
         if event.inaxes != self.ax:
             return
         self.pressed = True
-        if self.on_drag:
+        if self.on_drag and not self.zoom_enabled:
             self.on_drag(event.xdata, event.ydata, event)
+        self.parent().parent().canvas_clicked(self)  # notify main app
+        self.prev_drag = (event.xdata, event.ydata)  # for panning
 
     def _on_move(self, event):
         if not self.pressed:
             return
         if event.inaxes != self.ax:
             return
-        if self.on_drag:
-            self.on_drag(event.xdata, event.ydata, event)
+        if self.zoom_enabled:
+            self._on_pan(event)
+        else:
+            if self.on_drag:
+                self.on_drag(event.xdata, event.ydata, event)
 
     def _on_release(self, event):
         self.pressed = False
-
-    def disable_interaction(self):
-        if self.cid_press: self.mpl_disconnect(self.cid_press)
-        if self.cid_move: self.mpl_disconnect(self.cid_move)
-        self.pressed = False
+        self.prev_drag = None
 
     def _on_scroll(self, event):
-        if self.on_scroll:
-            step = 1 if event.button == 'up' else -1
-            self.on_scroll(step, event)
+        step = 1 if event.button == 'up' else -1
+        if self.zoom_enabled:
+            self._on_zoom(step, event)
+        else:
+            if self.on_scroll is not None:
+                self.on_scroll(step, event) # normal callback to viewer
+
+    def _on_pan(self, event):
+        if self.prev_drag is None or event.xdata is None or event.ydata is None:
+            return
+
+        dx = event.xdata - self.prev_drag[0]
+        dy = event.ydata - self.prev_drag[1]
+
+        x0, x1 = self.ax.get_xlim()
+        y0, y1 = self.ax.get_ylim()
+
+        new_x0 = x0 - dx
+        new_x1 = x1 - dx
+        new_y0 = y0 - dy
+        new_y1 = y1 - dy
+
+        # clamp to image boundaries
+        h, w = self.shape[:2]
+        if new_x0 < 0:
+            new_x1 -= new_x0
+            new_x0 = 0
+        if new_y0 < 0:
+            new_y1 -= new_y0
+            new_y0 = 0
+        if new_x1 > w:
+            diff = new_x1 - w
+            new_x0 -= diff
+            new_x1 = w
+        if new_y1 > h:
+            diff = new_y1 - h
+            new_y0 -= diff
+            new_y1 = h
+
+        # apply
+        self.ax.set_xlim(new_x0, new_x1)
+        self.ax.set_ylim(new_y0, new_y1)
+        self.prev_drag = (event.xdata, event.ydata)
+        self.draw_idle()
+
+    def _on_zoom(self, step, event):
+        if event.xdata is None or event.ydata is None:
+            return  # ignore zooming outside the image
+
+        # compute new scale
+        factor = 1.1 if step > 0 else 1/1.1
+        new_scale = np.clip(self.zoom_scale * factor, 1.0, 20.0)
+        factor = new_scale / self.zoom_scale   # true zoom ratio
+        self.zoom_scale = new_scale
+
+        cx, cy = event.xdata, event.ydata
+        x0, x1 = self.ax.get_xlim()
+        y0, y1 = self.ax.get_ylim()
+
+        # scale limits around cursor
+        new_x0 = cx - (cx - x0) / factor
+        new_x1 = cx + (x1 - cx) / factor
+        new_y0 = cy - (cy - y0) / factor
+        new_y1 = cy + (y1 - cy) / factor
+
+        h, w = self.shape[:2]
+
+        if self.zoom_scale == 1.0:
+            # fully zoomed out → reset entire image
+            self.ax.set_xlim(0, w)
+            self.ax.set_ylim(0, h)
+        else:
+            # only clamp when zooming out
+            if step < 0:  # zoom out
+                new_x0 = max(0, new_x0)
+                new_y0 = max(0, new_y0)
+                new_x1 = min(w, new_x1)
+                new_y1 = min(h, new_y1)
+
+            self.ax.set_xlim(new_x0, new_x1)
+            self.ax.set_ylim(new_y0, new_y1)
+
+        self.draw_idle()
+
 
 class ViewerApp(QtWidgets.QMainWindow):
     def __init__(self, volume, affine=None):
@@ -210,12 +321,17 @@ class ViewerApp(QtWidgets.QMainWindow):
         self.opacity_slider = QtWidgets.QSlider(QtCore.Qt.Horizontal)
         self.opacity_slider.setMinimum(0)
         self.opacity_slider.setMaximum(100)
-        self.opacity_slider.setValue(50)
+        self.opacity_slider.setValue(100)
         self.opacity_slider.setSingleStep(10)
         self.opacity_slider.setPageStep(10)
         self.opacity_slider.valueChanged.connect(self._change_opacity)
         toolbar.addWidget(QtWidgets.QLabel("Opacity"))
         toolbar.addWidget(self.opacity_slider)
+
+        self.zoom_checkbox = QtWidgets.QCheckBox("Zoom Mode")
+        self.zoom_checkbox.setChecked(False)
+        self.zoom_checkbox.stateChanged.connect(self._toggle_zoom_mode)
+        toolbar.addWidget(self.zoom_checkbox)
 
         # ----------------------- MAIN WIDGET and layout -----------------------
         central = QtWidgets.QWidget()
@@ -343,6 +459,13 @@ class ViewerApp(QtWidgets.QMainWindow):
         self.coronal_slider.blockSignals(False)
         self.sagittal_slider.blockSignals(False)
 
+    # ---------------- Canvas click handling ----------------
+    def canvas_clicked(self, canvas):
+        for c in [self.axial_canvas, self.sagittal_canvas, self.coronal_canvas]:
+            c.is_focused = (c is canvas)
+            c.draw_focus_border()
+        self.focused_canvas = canvas
+
     # ---------------- Drag callbacks ----------------
     def _on_axial_drag(self, xpix, ypix, event):
         if xpix is None or ypix is None:
@@ -453,6 +576,10 @@ class ViewerApp(QtWidgets.QMainWindow):
     def _change_opacity(self, value):
         self._update_all()
 
+    def _toggle_zoom_mode(self, state):
+        enabled = (state == QtCore.Qt.Checked)
+        for c in (self.axial_canvas, self.coronal_canvas, self.sagittal_canvas):
+            c.zoom_enabled = enabled
 
 # Utility loader
 def load_volume(path, dtype=np.float32):
