@@ -36,7 +36,7 @@ from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
 from matplotlib.figure import Figure
 import matplotlib.patches as patches
 import vtk
-
+from types import SimpleNamespace
 
 # ------------------------------------------------------------
 # LabelPanel: shows label colors + selection
@@ -57,6 +57,8 @@ class LabelPanel(QtWidgets.QWidget):
         layout.addWidget(QtWidgets.QLabel("Labels:"))
         layout.addWidget(self.label_list)
         layout.addWidget(self.current_label_display)
+        
+        self.selected_label = None
 
     def set_labels(self, seg_colors):
         self.label_list.clear()
@@ -72,6 +74,7 @@ class LabelPanel(QtWidgets.QWidget):
         label = item.data(QtCore.Qt.UserRole)
         self.current_label_display.setText(f"Selected Label: {label}")
         self.label_selected.emit(label)
+        self.selected_label = label
         
 class SliceCanvas(FigureCanvas):
     """A matplotlib canvas showing a single 2D slice with a red crosshair."""
@@ -82,6 +85,7 @@ class SliceCanvas(FigureCanvas):
         self.setParent(parent)
         self.ax = self.fig.add_subplot(111)
         self.ax.set_title(title)
+        self.title = title
         self.shape = None
         self.im = None
         self.seg = None
@@ -94,6 +98,8 @@ class SliceCanvas(FigureCanvas):
         self.on_drag = None # callback (xpix, ypix, event) -> None
         self.cid_release = None
         self.on_scroll = None # callback: (step, event)
+        # self.cid_key_press = None
+        # self.on_key_press = None # callback: (event)
 
         self.is_focused = False
         self.zoom_enabled = False # controlled by ViewerApp checkbox
@@ -163,6 +169,7 @@ class SliceCanvas(FigureCanvas):
         self.cid_move = self.mpl_connect('motion_notify_event', self._on_move)
         self.cid_release = self.mpl_connect('button_release_event', self._on_release)
         self.cid_scroll = self.mpl_connect('scroll_event', self._on_scroll)
+        # self.cid_key_press = self.mpl_connect("key_press_event", self._on_key_press)
 
     def disable_interaction(self):
         if self.cid_press: self.mpl_disconnect(self.cid_press)
@@ -278,24 +285,25 @@ class SliceCanvas(FigureCanvas):
 
         self.draw_idle()
 
+    # def _on_key_press(self, event):
+    #     if self.on_key_press is not None:
+    #         self.on_key_press(event)
 
 class ViewerApp(QtWidgets.QMainWindow):
-    def __init__(self, volume, affine=None):
+    def __init__(self):
         super().__init__()
         self.setWindowTitle('Brain Viewer with Segmentation Tools')
 
-        self.seg_img = None
+        # self.seg_img = None
         self.seg_rgba = None
-        self.seg_colors = {}
+        self.label_colors = {}
+        self.focused_canvas = None
 
-        self.volume = volume.astype(float)
-        self.affine = affine
-        self.is_rgb = (self.volume.ndim == 4 and self.volume.shape[-1] == 3)
-         # Make volume shape consistent: (X,Y,Z,[3])
-        self.shape = self.volume.shape[:3]  # (X, Y, Z)
-
-        # initial crosshair at center
-        self.pos = [s // 2 for s in self.shape]  # initial crosshair at center
+        self.volume = None
+        self.affine = None
+        self.is_rgb = None
+        self.shape = None  # (X, Y, Z)
+        self.pos = None
 
         # ----------------------- TOP TOOL BAR -----------------------
         toolbar = QtWidgets.QToolBar("MainToolbar")
@@ -348,24 +356,18 @@ class ViewerApp(QtWidgets.QMainWindow):
 
         # ---------- Sliders for each orientation ----------
         self.axial_slider = QtWidgets.QSlider(QtCore.Qt.Horizontal)
-        self.axial_slider.setRange(0, self.shape[2] - 1)
-        self.axial_slider.setValue(self.pos[2])
         self.axial_slider.valueChanged.connect(self._slider_axial)
 
         self.coronal_slider = QtWidgets.QSlider(QtCore.Qt.Horizontal)
-        self.coronal_slider.setRange(0, self.shape[1] - 1)
-        self.coronal_slider.setValue(self.pos[1])
         self.coronal_slider.valueChanged.connect(self._slider_coronal)
 
         self.sagittal_slider = QtWidgets.QSlider(QtCore.Qt.Horizontal)
-        self.sagittal_slider.setRange(0, self.shape[0] - 1)
-        self.sagittal_slider.setValue(self.pos[0])
         self.sagittal_slider.valueChanged.connect(self._slider_sagittal)
 
         # Matplotlib canvases
         self.axial_canvas = SliceCanvas(self, title="axial",)
         self.coronal_canvas = SliceCanvas(self, title="coronal",)
-        self.sagittal_canvas = SliceCanvas(self, title="saggital",)
+        self.sagittal_canvas = SliceCanvas(self, title="sagittal",)
 
         for c in (self.axial_canvas, self.coronal_canvas, self.sagittal_canvas):
             c.enable_interaction()  
@@ -377,6 +379,12 @@ class ViewerApp(QtWidgets.QMainWindow):
         self.axial_canvas.on_scroll = self._on_axial_scroll
         self.coronal_canvas.on_scroll = self._on_coronal_scroll
         self.sagittal_canvas.on_scroll = self._on_sagittal_scroll
+
+        # self.axial_canvas.on_key_press = self._on_key_press
+        # self.coronal_canvas.on_key_press = self._on_key_press
+        # self.sagittal_canvas.on_key_press = self._on_key_press
+
+        QtWidgets.QApplication.instance().installEventFilter(self)
 
         # ----------- layout: slider above each viewer -----------
         grid.addWidget(self.axial_slider,   0, 0)
@@ -391,10 +399,12 @@ class ViewerApp(QtWidgets.QMainWindow):
         self._update_status()
 
         # initialize images and 3D
-        self._update_all()
+        # self._update_all()
+        self._test_init()
 
     def _update_status(self):
-        self.status.showMessage(f'pos (x,y,z): {self.pos[0]}, {self.pos[1]}, {self.pos[2]}')
+        if self.pos is not None:
+            self.status.showMessage(f'pos (x,y,z): {self.pos[0]}, {self.pos[1]}, {self.pos[2]}')
 
     # ---------------- 2D slices ----------------
     def _make_seg_overlay(self, seg2d):
@@ -408,7 +418,7 @@ class ViewerApp(QtWidgets.QMainWindow):
     def _get_axial(self) -> np.ndarray:
         slice2d = self.volume[:, :, self.pos[2], :] if self.is_rgb else self.volume[:, :, self.pos[2]]
         slice2d = np.fliplr(slice2d.T)  # transpose for correct orientation
-        if self.seg_img is not None and self.seg_checkbox.isChecked():
+        if self.seg_rgba is not None and self.seg_checkbox.isChecked():
             seg_slice2d = self._make_seg_overlay(self.seg_rgba[:, :, self.pos[2]])
         else:
             seg_slice2d = None
@@ -417,7 +427,7 @@ class ViewerApp(QtWidgets.QMainWindow):
     def _get_coronal(self) -> np.ndarray:
         slice2d = self.volume[:, self.pos[1], :, :] if self.is_rgb else self.volume[:, self.pos[1], :]
         slice2d = np.fliplr(slice2d.T)  # transpose for correct orientation
-        if self.seg_img is not None and self.seg_checkbox.isChecked():
+        if self.seg_rgba is not None and self.seg_checkbox.isChecked():
             seg_slice2d = self._make_seg_overlay(self.seg_rgba[:, self.pos[1], :])
         else:
             seg_slice2d = None
@@ -426,7 +436,7 @@ class ViewerApp(QtWidgets.QMainWindow):
     def _get_sagittal(self) -> np.ndarray:
         slice2d = self.volume[self.pos[0], :, :, :] if self.is_rgb else self.volume[self.pos[0], :, :]
         slice2d = np.fliplr(slice2d.T)  # transpose for correct orientation
-        if self.seg_img is not None and self.seg_checkbox.isChecked():
+        if self.seg_rgba is not None and self.seg_checkbox.isChecked():
             seg_slice2d = self._make_seg_overlay(self.seg_rgba[self.pos[0], :, :])
         else:
             seg_slice2d = None
@@ -517,6 +527,91 @@ class ViewerApp(QtWidgets.QMainWindow):
         self.pos[0] = value
         self._update_all()
 
+    # ---------------- Key press handling ----------------
+    def eventFilter(self, obj, event):
+        if event.type() == QtCore.QEvent.KeyPress:
+            key = event.key()
+            keymap = {
+                QtCore.Qt.Key_Up: "up",
+                QtCore.Qt.Key_Down: "down",
+                QtCore.Qt.Key_Left: "left",
+                QtCore.Qt.Key_Right: "right",
+                QtCore.Qt.Key_Plus: "+",
+                QtCore.Qt.Key_Equal: "+",
+                QtCore.Qt.Key_Minus: "-",
+            }
+
+            if key in keymap:
+                self._on_key_press(key = keymap[key])
+                return True  # prevent any widget from getting this key
+
+        return super().eventFilter(obj, event)
+    
+    def _on_key_press(self, key):
+        if self.label_panel.selected_label is None or self.focused_canvas is None:
+            return
+
+        if key in ["up", "down", "left", "right"]:
+            self._move_label_3d(key)
+
+    # ---------------- Move label in 3D ----------------
+    def _move_label_3d(self, arrow_key):
+        label = self.label_panel.selected_label
+        rgba = self.seg_rgba
+        H, W, D, _ = rgba.shape
+        
+        # Get RGBA tuple for this label (e.g., (255,0,0,255))
+        color = self.label_colors[label]
+        color = color + (1.0,)  # add alpha=1.0
+        color = np.array(color, dtype=np.float32)
+
+        # Step 1 — find voxels of this label (3-D coordinates)
+        mask = np.all(rgba == color, axis=-1)
+        coords = np.array(np.where(mask)).T   # shape (N,3)
+        if coords.size == 0:
+            return
+
+        # Step 2 — compute translation vector
+        dx = dy = dz = 0
+        
+        if self.focused_canvas.title == "axial":
+            if arrow_key == "up":    dy = +1
+            if arrow_key == "down":  dy = -1
+            if arrow_key == "left":  dx = +1
+            if arrow_key == "right": dx = -1
+
+        elif self.focused_canvas.title == "coronal":
+            if arrow_key == "up":    dz = +1
+            if arrow_key == "down":  dz = -1
+            if arrow_key == "left":  dx = +1
+            if arrow_key == "right": dx = -1
+
+        elif self.focused_canvas.title == "sagittal":
+            if arrow_key == "up":    dz = +1
+            if arrow_key == "down":  dz = -1
+            if arrow_key == "left":  dy = +1
+            if arrow_key == "right": dy = -1
+
+        # # Step 3 — erase old positions
+        rgba[mask] = [0, 0, 0, 0]   # or transparent background
+
+        # # Step 4 — translate coordinates
+        new_coords = coords + np.array([dx, dy, dz])
+
+        # # Clamp to boundaries
+        new_coords[:,0] = np.clip(new_coords[:,0], 0, H-1)
+        new_coords[:,1] = np.clip(new_coords[:,1], 0, W-1)
+        new_coords[:,2] = np.clip(new_coords[:,2], 0, D-1)
+
+        # # Step 5 — write label color to translated voxels
+        rgba[new_coords[:,0], new_coords[:,1], new_coords[:,2]] = color
+
+        # # Save modified volume
+        self.seg_rgba = rgba
+
+        # # Step 6 — update all canvases
+        self._update_all()
+
     # ---------------- Load new volume ----------------
     def _load_new_volume(self):
         path, _ = QtWidgets.QFileDialog.getOpenFileName(
@@ -529,12 +624,16 @@ class ViewerApp(QtWidgets.QMainWindow):
         self.volume = data.astype(float)
         self.affine = aff
         self.shape = self.volume.shape[:3]
-        self.pos = [s // 2 for s in self.shape]
+        self.pos = [s // 2 for s in self.shape]  # initial crosshair at center
+        self.is_rgb = (self.volume.ndim == 4 and self.volume.shape[-1] == 3)
 
         # update slider ranges
         self.axial_slider.setRange(0, self.shape[2] - 1)
         self.coronal_slider.setRange(0, self.shape[1] - 1)
         self.sagittal_slider.setRange(0, self.shape[0] - 1)
+        self.axial_slider.setValue(self.pos[2])
+        self.coronal_slider.setValue(self.pos[1])
+        self.sagittal_slider.setValue(self.pos[0])
 
         self._update_all()
 
@@ -544,30 +643,39 @@ class ViewerApp(QtWidgets.QMainWindow):
             return
         
         data, aff = load_volume(path)
-        self.seg_img = data.astype(int)
-        labels = np.unique(self.seg_img)
+        seg_img = data.astype(int)
+        labels = np.unique(seg_img)
         rng = np.random.default_rng(0)
-        self.seg_colors = {
+        self.label_colors = {
             l: tuple(rng.random(3)) for l in labels if l != 0
         }
-        self.label_panel.set_labels(self.seg_colors)
+        self.label_panel.set_labels(self.label_colors)
         # PRECOMPUTE RGBA SEGMENTATION
-        h, w, d = self.seg_img.shape
+        h, w, d = seg_img.shape
         self.seg_rgba = np.zeros((h, w, d, 4), dtype=np.float32)
 
-        for l, color in self.seg_colors.items():
-            mask = (self.seg_img == l)
+        for l, color in self.label_colors.items():
+            mask = (seg_img == l)
             self.seg_rgba[mask, :3] = color
             self.seg_rgba[mask,  3] = 1.0   # alpha = 1 initially
         self._update_all()
 
-    def _save_segmentation_nifti(self):
-        if self.seg_img is None:
+    def rgba_to_label(self, rgba_volume):
+        seg = np.zeros(rgba_volume.shape[:3], dtype=np.int32)
+
+        for label, color in self.label_colors.items():
+            mask = np.all(rgba_volume[..., :3] == color, axis=-1)
+            seg[mask] = label
+
+        return seg
+
+    def _save_segmentation_nifti(self, seg_img):
+        if seg_img is None:
             return
         path, _ = QtWidgets.QFileDialog.getSaveFileName(self, "Save Segmentation", "", "NIfTI (*.nii *.nii.gz)")
         if not path:
             return
-        img = nib.Nifti1Image(self.seg_img, affine=self.affine)
+        img = nib.Nifti1Image(seg_img, affine=self.affine)
         nib.save(img, path)
 
     def _toggle_seg_visibility(self, state):
@@ -580,6 +688,40 @@ class ViewerApp(QtWidgets.QMainWindow):
         enabled = (state == QtCore.Qt.Checked)
         for c in (self.axial_canvas, self.coronal_canvas, self.sagittal_canvas):
             c.zoom_enabled = enabled
+
+    def _test_init(self):
+        vol, aff = load_volume("./subject_001_T1_native_restored.nii.gz")
+        self.volume = vol.astype(float)
+        self.affine = aff
+        self.shape = self.volume.shape[:3]
+        self.pos = [s // 2 for s in self.shape]
+        self.is_rgb = (self.volume.ndim == 4 and self.volume.shape[-1] == 3)
+
+        # update slider ranges
+        self.axial_slider.setRange(0, self.shape[2] - 1)
+        self.coronal_slider.setRange(0, self.shape[1] - 1)
+        self.sagittal_slider.setRange(0, self.shape[0] - 1)
+        self.axial_slider.setValue(self.pos[2])
+        self.coronal_slider.setValue(self.pos[1])
+        self.sagittal_slider.setValue(self.pos[0])
+
+        seg, aff = load_volume("./subject_001_T1_native_structures_labeled.nii.gz")
+        seg_img = seg.astype(int)
+        labels = np.unique(seg_img)
+        rng = np.random.default_rng(0)
+        self.label_colors = {
+            l: tuple(rng.random(3)) for l in labels if l != 0
+        }
+        self.label_panel.set_labels(self.label_colors)
+        # PRECOMPUTE RGBA SEGMENTATION
+        h, w, d = seg_img.shape
+        self.seg_rgba = np.zeros((h, w, d, 4), dtype=np.float32)
+
+        for l, color in self.label_colors.items():
+            mask = (seg_img == l)
+            self.seg_rgba[mask, :3] = color
+            self.seg_rgba[mask,  3] = 1.0   # alpha = 1 initially
+        self._update_all()
 
 # Utility loader
 def load_volume(path, dtype=np.float32):
@@ -598,10 +740,8 @@ def load_volume(path, dtype=np.float32):
         raise ValueError('Unsupported extension: ' + ext)
 
 def main():
-    vol, aff = load_volume("./subject_001_T1_native_restored.nii.gz")
-
     app = QtWidgets.QApplication(sys.argv)
-    viewer = ViewerApp(vol, affine=aff)
+    viewer = ViewerApp()
     viewer.show()
     sys.exit(app.exec_())
 
