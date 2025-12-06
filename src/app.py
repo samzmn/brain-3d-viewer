@@ -29,6 +29,7 @@ Notes:
 
 import sys
 import os
+from typing import Tuple
 import numpy as np
 import nibabel as nib
 from PyQt5 import QtWidgets, QtCore, QtGui
@@ -36,7 +37,7 @@ from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
 from matplotlib.figure import Figure
 import matplotlib.patches as patches
 import vtk
-from types import SimpleNamespace
+from utils import load_volume
 
 # ------------------------------------------------------------
 # LabelPanel: shows label colors + selection
@@ -293,17 +294,15 @@ class ViewerApp(QtWidgets.QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle('Brain Viewer with Segmentation Tools')
-
-        # self.seg_img = None
-        self.seg_rgba = None
-        self.label_colors = {}
-        self.focused_canvas = None
-
         self.volume = None
         self.affine = None
         self.is_rgb = None
         self.shape = None  # (X, Y, Z)
         self.pos = None
+        self.seg_volume = None
+        self.seg_rgba = None
+        self.label_colors = {}
+        self.focused_canvas = None
 
         # ----------------------- TOP TOOL BAR -----------------------
         toolbar = QtWidgets.QToolBar("MainToolbar")
@@ -320,6 +319,10 @@ class ViewerApp(QtWidgets.QMainWindow):
         save_seg_btn = QtWidgets.QAction("Save Segmentation", self)
         save_seg_btn.triggered.connect(self._save_segmentation_nifti)
         toolbar.addAction(save_seg_btn)
+
+        reload_seg_btn = QtWidgets.QAction("Reload Segmentation", self)
+        reload_seg_btn.triggered.connect(self._reload_segmentation_nifti)
+        toolbar.addAction(reload_seg_btn)
 
         self.seg_checkbox = QtWidgets.QCheckBox("Show Segmentation")
         self.seg_checkbox.setChecked(True)
@@ -338,7 +341,7 @@ class ViewerApp(QtWidgets.QMainWindow):
 
         self.zoom_checkbox = QtWidgets.QCheckBox("Zoom Mode")
         self.zoom_checkbox.setChecked(False)
-        self.zoom_checkbox.stateChanged.connect(self._toggle_zoom_mode)
+        self.zoom_checkbox.stateChanged.connect(self._toggle_zoom_mode_checkbox)
         toolbar.addWidget(self.zoom_checkbox)
 
         # ----------------------- MAIN WIDGET and layout -----------------------
@@ -529,8 +532,21 @@ class ViewerApp(QtWidgets.QMainWindow):
 
     # ---------------- Key press handling ----------------
     def eventFilter(self, obj, event):
+        # Detect key release → disable zoom
+        if event.type() == QtCore.QEvent.KeyRelease:
+            # When Ctrl is released → disable zoom
+            if not (event.modifiers() & QtCore.Qt.ControlModifier):
+                self._toggle_zoom_mode(False)
+                
         if event.type() == QtCore.QEvent.KeyPress:
+            # --- CTRL-drag zoom activation ---
+            if event.modifiers() & QtCore.Qt.ControlModifier:
+                self._toggle_zoom_mode(True)
+            else:
+                self._toggle_zoom_mode(False)
+            
             key = event.key()
+            print(key)
             keymap = {
                 QtCore.Qt.Key_Up: "up",
                 QtCore.Qt.Key_Down: "down",
@@ -643,38 +659,51 @@ class ViewerApp(QtWidgets.QMainWindow):
             return
         
         data, aff = load_volume(path)
-        seg_img = data.astype(int)
-        labels = np.unique(seg_img)
+        assert data.shape == self.volume.shape, f"Shape mismatch: {data.shape} vs {self.volume.shape}"
+        np.testing.assert_array_equal(aff, self.affine, "Affine is not equal to main nifti file's Affine !")
+        self.seg_volume = data.astype(int)
+        labels = np.unique(self.seg_volume)
         rng = np.random.default_rng(0)
         self.label_colors = {
             l: tuple(rng.random(3)) for l in labels if l != 0
         }
         self.label_panel.set_labels(self.label_colors)
         # PRECOMPUTE RGBA SEGMENTATION
-        h, w, d = seg_img.shape
+        self._label_to_rgba(self.seg_volume)
+        self._update_all()
+
+    def _reload_segmentation_nifti(self):
+        self._label_to_rgba(self.seg_volume)
+        self._update_all()
+
+    def _label_to_rgba(self, seg_volume:np.ndarray) -> None:
+        h, w, d = seg_volume.shape
         self.seg_rgba = np.zeros((h, w, d, 4), dtype=np.float32)
 
         for l, color in self.label_colors.items():
-            mask = (seg_img == l)
+            mask = (seg_volume == l)
             self.seg_rgba[mask, :3] = color
             self.seg_rgba[mask,  3] = 1.0   # alpha = 1 initially
-        self._update_all()
 
-    def rgba_to_label(self, rgba_volume):
+    def _rgba_to_label(self, rgba_volume) -> np.ndarray:
         seg = np.zeros(rgba_volume.shape[:3], dtype=np.int32)
 
         for label, color in self.label_colors.items():
-            mask = np.all(rgba_volume[..., :3] == color, axis=-1)
+            rgba_color = np.array(color + (1.0,), dtype=np.float32) # add alpha=1.0
+            mask = np.all(rgba_volume == rgba_color, axis=-1)
             seg[mask] = label
 
         return seg
 
-    def _save_segmentation_nifti(self, seg_img):
-        if seg_img is None:
+    def _save_segmentation_nifti(self):
+        if self.seg_rgba is None:
             return
-        path, _ = QtWidgets.QFileDialog.getSaveFileName(self, "Save Segmentation", "", "NIfTI (*.nii *.nii.gz)")
+        path, x = QtWidgets.QFileDialog.getSaveFileName(self, "Save Segmentation", "", "NIfTI (*.nii.gz *.nii)")
+        print(x)
+        print(path)
         if not path:
             return
+        seg_img = self._rgba_to_label(self.seg_rgba)
         img = nib.Nifti1Image(seg_img, affine=self.affine)
         nib.save(img, path)
 
@@ -684,10 +713,13 @@ class ViewerApp(QtWidgets.QMainWindow):
     def _change_opacity(self, value):
         self._update_all()
 
-    def _toggle_zoom_mode(self, state):
-        enabled = (state == QtCore.Qt.Checked)
+    def _toggle_zoom_mode(self, is_enabled: bool):
         for c in (self.axial_canvas, self.coronal_canvas, self.sagittal_canvas):
-            c.zoom_enabled = enabled
+            c.zoom_enabled = is_enabled
+
+    def _toggle_zoom_mode_checkbox(self, state):
+        enabled = (state == QtCore.Qt.Checked)
+        self._toggle_zoom_mode(enabled)
 
     def _test_init(self):
         vol, aff = load_volume("./subject_001_T1_native_restored.nii.gz")
@@ -706,38 +738,23 @@ class ViewerApp(QtWidgets.QMainWindow):
         self.sagittal_slider.setValue(self.pos[0])
 
         seg, aff = load_volume("./subject_001_T1_native_structures_labeled.nii.gz")
-        seg_img = seg.astype(int)
-        labels = np.unique(seg_img)
+        self.seg_volume = seg.astype(int)
+        labels = np.unique(self.seg_volume)
         rng = np.random.default_rng(0)
         self.label_colors = {
             l: tuple(rng.random(3)) for l in labels if l != 0
         }
         self.label_panel.set_labels(self.label_colors)
         # PRECOMPUTE RGBA SEGMENTATION
-        h, w, d = seg_img.shape
+        h, w, d = self.seg_volume.shape
         self.seg_rgba = np.zeros((h, w, d, 4), dtype=np.float32)
 
         for l, color in self.label_colors.items():
-            mask = (seg_img == l)
+            mask = (self.seg_volume == l)
             self.seg_rgba[mask, :3] = color
             self.seg_rgba[mask,  3] = 1.0   # alpha = 1 initially
         self._update_all()
 
-# Utility loader
-def load_volume(path, dtype=np.float32):
-    base, ext = os.path.splitext(path)
-    if ext == '.gz' and base.endswith('.nii'):
-        ext = '.nii.gz'
-    ext = ext.lower()
-    if ext in ['.nii', '.nii.gz']:
-        nii = nib.load(path)
-        data = nii.get_fdata(dtype=dtype)
-        aff = nii.affine
-        print(f"{aff=}")
-        print(f"{data.shape=}")
-        return data, aff
-    else:
-        raise ValueError('Unsupported extension: ' + ext)
 
 def main():
     app = QtWidgets.QApplication(sys.argv)
