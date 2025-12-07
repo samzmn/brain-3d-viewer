@@ -29,8 +29,10 @@ Notes:
 
 import sys
 import os
+from turtle import color
 from typing import Tuple
 import numpy as np
+from scipy.ndimage import binary_dilation, binary_erosion, rotate
 import nibabel as nib
 from PyQt5 import QtWidgets, QtCore, QtGui
 from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
@@ -546,7 +548,7 @@ class ViewerApp(QtWidgets.QMainWindow):
                 self._toggle_zoom_mode(False)
             
             key = event.key()
-            print(key)
+            
             keymap = {
                 QtCore.Qt.Key_Up: "up",
                 QtCore.Qt.Key_Down: "down",
@@ -555,6 +557,8 @@ class ViewerApp(QtWidgets.QMainWindow):
                 QtCore.Qt.Key_Plus: "+",
                 QtCore.Qt.Key_Equal: "+",
                 QtCore.Qt.Key_Minus: "-",
+                QtCore.Qt.Key_Comma: "rotate_ccw",
+                QtCore.Qt.Key_Period: "rotate_cw",
             }
 
             if key in keymap:
@@ -564,11 +568,21 @@ class ViewerApp(QtWidgets.QMainWindow):
         return super().eventFilter(obj, event)
     
     def _on_key_press(self, key):
-        if self.label_panel.selected_label is None or self.focused_canvas is None:
+        if self.label_panel.selected_label is None:
             return
-
+        if key == "+":
+            self._resize_label_3d("+")
+        elif key == "-":
+            self._resize_label_3d("-")
+        if self.focused_canvas is None:
+            return
         if key in ["up", "down", "left", "right"]:
             self._move_label_3d(key)
+        elif key == "rotate_cw":
+            self._rotate_label_3d(angle_deg=-5)
+        elif key == "rotate_ccw":
+            self._rotate_label_3d(angle_deg=+5)
+        
 
     # ---------------- Move label in 3D ----------------
     def _move_label_3d(self, arrow_key):
@@ -627,6 +641,49 @@ class ViewerApp(QtWidgets.QMainWindow):
 
         # # Step 6 — update all canvases
         self._update_all()
+
+    def _resize_label_3d(self, sign):
+        """
+        sign = '+' expand (dilate)
+        sign = '-' shrink (erode)
+        """
+
+        label = self.label_panel.selected_label
+        rgba = self.seg_rgba.copy()
+        H, W, D, _ = rgba.shape
+
+        # RGBA color tuple for this label
+        color = np.array(self.label_colors[label] + (1.0,), dtype=np.float32)
+
+        # Step 1 — get 3D mask
+        mask = np.all(rgba == color, axis=-1)   # shape (H,W,D)
+        if not np.any(mask):
+            return
+
+        # Step 2 — morphological op
+        if sign == "+":
+            new_mask = binary_dilation(mask, iterations=1)
+        else:  # sign == "-"
+            new_mask = binary_erosion(mask, iterations=1)
+
+        # Step 3 — erase old voxels
+        rgba[mask] = [0,0,0,0]
+
+        # Step 4 — write new voxels
+        rgba[new_mask] = color
+
+        # Step 5 — update state
+        self.seg_rgba = rgba
+        self._update_all()
+
+    def _rotate_label_3d(self, angle_deg=5):
+        axis = {"axial":"z", "coronal":"y", "sagittal":"x"}[self.focused_canvas.title]
+        if axis == "x":
+            rotated = rotate(self.seg_rgba, angle_deg, axes=(1,2), reshape=False, order=0, mode='constant', cval=0,)
+        elif axis == "y":
+            rotated = rotate(self.seg_rgba, angle_deg, axes=(0,2), reshape=False, order=0, mode='constant', cval=0,)
+        else: # z
+            rotated = rotate(self.seg_rgba, angle_deg, axes=(0,1), reshape=False, order=0, mode='constant', cval=0,)
 
     # ---------------- Load new volume ----------------
     def _load_new_volume(self):
