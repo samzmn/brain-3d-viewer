@@ -310,15 +310,15 @@ class ViewerApp(QtWidgets.QMainWindow):
         toolbar = QtWidgets.QToolBar("MainToolbar")
         self.addToolBar(toolbar)
 
-        load_btn = QtWidgets.QAction("Load NIfTI...", self)
+        load_btn = QtWidgets.QAction("Load T1 NIfTI...", self)
         load_btn.triggered.connect(self._load_new_volume)
         toolbar.addAction(load_btn)
 
-        load_seg_btn = QtWidgets.QAction("Load Segmentation", self)
+        load_seg_btn = QtWidgets.QAction("Load Segmentation NIfTI...", self)
         load_seg_btn.triggered.connect(self._load_segmentation_nifti)
         toolbar.addAction(load_seg_btn)
 
-        save_seg_btn = QtWidgets.QAction("Save Segmentation", self)
+        save_seg_btn = QtWidgets.QAction("Save Segmentation NIfTI...", self)
         save_seg_btn.triggered.connect(self._save_segmentation_nifti)
         toolbar.addAction(save_seg_btn)
 
