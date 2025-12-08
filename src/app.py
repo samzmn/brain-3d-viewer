@@ -61,6 +61,8 @@ class LabelPanel(QtWidgets.QWidget):
         layout.addWidget(self.label_list)
         layout.addWidget(self.current_label_display)
         
+        self.setMaximumWidth(220)
+
         self.selected_label = None
 
     def set_labels(self, seg_colors):
@@ -356,8 +358,8 @@ class ViewerApp(QtWidgets.QMainWindow):
         layout.addWidget(self.label_panel)
 
         # ---------------- 2D views container ---------------------
-        grid = QtWidgets.QGridLayout()
-        layout.addLayout(grid)
+        self.grid_layout = QtWidgets.QGridLayout()
+        layout.addLayout(self.grid_layout)
 
         # ---------- Sliders for each orientation ----------
         self.axial_slider = QtWidgets.QSlider(QtCore.Qt.Horizontal)
@@ -368,6 +370,20 @@ class ViewerApp(QtWidgets.QMainWindow):
 
         self.sagittal_slider = QtWidgets.QSlider(QtCore.Qt.Horizontal)
         self.sagittal_slider.valueChanged.connect(self._slider_sagittal)
+
+        self.axial_label = QtWidgets.QLabel("0")
+        self.coronal_label = QtWidgets.QLabel("0")
+        self.sagittal_label = QtWidgets.QLabel("0")
+
+        self.axial_max_btn = QtWidgets.QPushButton("⤢")
+        self.coronal_max_btn = QtWidgets.QPushButton("⤢")
+        self.sagittal_max_btn = QtWidgets.QPushButton("⤢")
+
+        self.axial_max_btn.clicked.connect(lambda: self._toggle_maximize("axial"))
+        self.coronal_max_btn.clicked.connect(lambda: self._toggle_maximize("coronal"))
+        self.sagittal_max_btn.clicked.connect(lambda: self._toggle_maximize("sagittal"))
+
+        self.maximized_view = None
 
         # Matplotlib canvases
         self.axial_canvas = SliceCanvas(self, title="axial",)
@@ -391,13 +407,8 @@ class ViewerApp(QtWidgets.QMainWindow):
 
         QtWidgets.QApplication.instance().installEventFilter(self)
 
-        # ----------- layout: slider above each viewer -----------
-        grid.addWidget(self.axial_slider,   0, 0)
-        grid.addWidget(self.coronal_slider, 0, 1)
-        grid.addWidget(self.axial_canvas,   1, 0)
-        grid.addWidget(self.coronal_canvas, 1, 1)
-        grid.addWidget(self.sagittal_slider, 2, 0)
-        grid.addWidget(self.sagittal_canvas, 3, 0)
+        # ----------- layout with label + slider + maximize button -----------
+        self._rebuild_grid_layout()
 
         # status bar text
         self.status = self.statusBar()
@@ -507,30 +518,139 @@ class ViewerApp(QtWidgets.QMainWindow):
     def _on_axial_scroll(self, step, event):
         # axial = Z axis slice
         self.pos[2] = np.clip(self.pos[2] + step, 0, self.shape[2]-1)
+        self.axial_label.setText(str(self.pos[2] + 1))
         self._update_all()
 
     def _on_coronal_scroll(self, step, event):
         # coronal = Y axis slice
         self.pos[1] = np.clip(self.pos[1] + step, 0, self.shape[1]-1)
+        self.coronal_label.setText(str(self.pos[1] + 1))
         self._update_all()
 
     def _on_sagittal_scroll(self, step, event):
         # sagittal = X axis slice
         self.pos[0] = np.clip(self.pos[0] + step, 0, self.shape[0]-1)
+        self.sagittal_label.setText(str(self.pos[0] + 1))
         self._update_all()
 
     # ---------------- Slider callbacks ----------------
     def _slider_axial(self, value):
+        self.axial_label.setText(str(value + 1))
         self.pos[2] = value
         self._update_all()
 
     def _slider_coronal(self, value):
+        self.coronal_label.setText(str(value + 1))
         self.pos[1] = value
         self._update_all()
 
     def _slider_sagittal(self, value):
+        self.sagittal_label.setText(str(value + 1))
         self.pos[0] = value
         self._update_all()
+
+    # ---------------- Canvases visibility ----------------
+    def _clear_layout(self, layout):
+        while layout.count():
+            item = layout.takeAt(0)
+            widget = item.widget()
+            if widget is not None:
+                widget.setParent(None)
+            else:
+                sublayout = item.layout()
+                if sublayout is not None:
+                    self._clear_layout(sublayout)
+
+    def _rebuild_grid_layout(self):
+        grid = self.grid_layout  # store this during __init__
+
+        # 1) Remove everything
+        self._clear_layout(grid)
+
+        # 2) Re-create slider + labels + buttons
+        axial_row = QtWidgets.QHBoxLayout()
+        axial_row.addWidget(self.axial_label)
+        axial_row.addWidget(self.axial_slider)
+        axial_row.addWidget(self.axial_max_btn)
+        grid.addLayout(axial_row, 0, 0)
+
+        coronal_row = QtWidgets.QHBoxLayout()
+        coronal_row.addWidget(self.coronal_label)
+        coronal_row.addWidget(self.coronal_slider)
+        coronal_row.addWidget(self.coronal_max_btn)
+        grid.addLayout(coronal_row, 0, 1)
+
+        sagittal_row = QtWidgets.QHBoxLayout()
+        sagittal_row.addWidget(self.sagittal_label)
+        sagittal_row.addWidget(self.sagittal_slider)
+        sagittal_row.addWidget(self.sagittal_max_btn)
+        grid.addLayout(sagittal_row, 2, 0)
+
+        # 3) Re-add canvases
+        grid.addWidget(self.axial_canvas,    1, 0)
+        grid.addWidget(self.coronal_canvas,  1, 1)
+        grid.addWidget(self.sagittal_canvas, 3, 0)
+
+        # 4) Restore good stretch factors
+        grid.setRowStretch(1, 1)
+        grid.setRowStretch(3, 1)
+        grid.setColumnStretch(0, 1)
+        grid.setColumnStretch(1, 1)
+
+        # 5) Update geometry
+        # self.centralWidget().updateGeometry()
+        self.updateGeometry()
+        self.repaint()
+
+    def _maximize_view(self, view):
+        grid = self.grid_layout
+
+        # 1) Clear the entire grid
+        self._clear_layout(grid)
+
+        vbox = QtWidgets.QVBoxLayout()
+
+        # 2) Add only the selected canvas
+        if view == "axial":
+            row = QtWidgets.QHBoxLayout()
+            row.addWidget(self.axial_label)
+            row.addWidget(self.axial_slider)
+            row.addWidget(self.axial_max_btn)
+            vbox.addLayout(row)
+            vbox.addWidget(self.axial_canvas)
+        elif view == "coronal":
+            row = QtWidgets.QHBoxLayout()
+            row.addWidget(self.coronal_label)
+            row.addWidget(self.coronal_slider)
+            row.addWidget(self.coronal_max_btn)
+            vbox.addLayout(row)
+            vbox.addWidget(self.coronal_canvas)
+        else:
+            row = QtWidgets.QHBoxLayout()
+            row.addWidget(self.sagittal_label)
+            row.addWidget(self.sagittal_slider)
+            row.addWidget(self.sagittal_max_btn)
+            vbox.addLayout(row)
+            vbox.addWidget(self.sagittal_canvas)
+
+        grid.addLayout(vbox, 0, 0, 4, 2)
+
+        # Make it fill all
+        grid.setRowStretch(0, 1)
+        grid.setColumnStretch(0, 1)
+
+        self.updateGeometry()
+
+    def _toggle_maximize(self, view):
+        # --- RESTORE MODE ---
+        if self.maximized_view is not None:
+            self.maximized_view = None
+            self._rebuild_grid_layout()
+            return
+
+        # --- MAXIMIZE MODE ---
+        self.maximized_view = view
+        self._maximize_view(view)
 
     # ---------------- Key press handling ----------------
     def eventFilter(self, obj, event):
@@ -707,6 +827,9 @@ class ViewerApp(QtWidgets.QMainWindow):
         self.axial_slider.setValue(self.pos[2])
         self.coronal_slider.setValue(self.pos[1])
         self.sagittal_slider.setValue(self.pos[0])
+        self.axial_label.setText(str(self.pos[2] + 1))
+        self.coronal_label.setText(str(self.pos[1] + 1))
+        self.sagittal_label.setText(str(self.pos[0] + 1))
 
         self._update_all()
 
@@ -793,6 +916,9 @@ class ViewerApp(QtWidgets.QMainWindow):
         self.axial_slider.setValue(self.pos[2])
         self.coronal_slider.setValue(self.pos[1])
         self.sagittal_slider.setValue(self.pos[0])
+        self.axial_label.setText(str(self.pos[2] + 1))
+        self.coronal_label.setText(str(self.pos[1] + 1))
+        self.sagittal_label.setText(str(self.pos[0] + 1))
 
         seg, aff = load_volume("./subject_001_T1_native_structures_labeled.nii.gz")
         self.seg_volume = seg.astype(int)
