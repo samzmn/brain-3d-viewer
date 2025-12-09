@@ -307,14 +307,35 @@ class ViewerApp(QtWidgets.QMainWindow):
         self.seg_rgba = None
         self.label_colors = {}
         self.focused_canvas = None
+        self.t1_volume = None
+        self.t1_affine = None
+        self.t2_volume = None
+        self.t2_affine = None
+        self.current_modality = "T1"   # "T1" or "T2"
 
         # ----------------------- TOP TOOL BAR -----------------------
         toolbar = QtWidgets.QToolBar("MainToolbar")
         self.addToolBar(toolbar)
 
         load_btn = QtWidgets.QAction("Load T1 NIfTI...", self)
-        load_btn.triggered.connect(self._load_new_volume)
+        load_btn.triggered.connect(self._load_t1_volume)
         toolbar.addAction(load_btn)
+
+        load_t2_btn = QtWidgets.QAction("Load T2 NIfTI...", self)
+        load_t2_btn.triggered.connect(self._load_t2_volume)
+        toolbar.addAction(load_t2_btn)
+
+        self.modality_group = QtWidgets.QButtonGroup(self)
+        self.t1_radio = QtWidgets.QRadioButton("T1")
+        self.t2_radio = QtWidgets.QRadioButton("T2")
+        self.t1_radio.setChecked(True)
+        self.modality_group.addButton(self.t1_radio)
+        self.modality_group.addButton(self.t2_radio)
+        self.t1_radio.toggled.connect(self._change_modality)
+        self.t1_radio.setDisabled(True)
+        self.t2_radio.setDisabled(True)
+        toolbar.addWidget(self.t1_radio)
+        toolbar.addWidget(self.t2_radio)
 
         load_seg_btn = QtWidgets.QAction("Load Segmentation NIfTI...", self)
         load_seg_btn.triggered.connect(self._load_segmentation_nifti)
@@ -340,7 +361,7 @@ class ViewerApp(QtWidgets.QMainWindow):
         self.opacity_slider.setSingleStep(10)
         self.opacity_slider.setPageStep(10)
         self.opacity_slider.valueChanged.connect(self._change_opacity)
-        toolbar.addWidget(QtWidgets.QLabel("Opacity"))
+        toolbar.addWidget(QtWidgets.QLabel("Opacity of Segmentation:"))
         toolbar.addWidget(self.opacity_slider)
 
         self.zoom_checkbox = QtWidgets.QCheckBox("Zoom Mode")
@@ -805,17 +826,58 @@ class ViewerApp(QtWidgets.QMainWindow):
         else: # z
             rotated = rotate(self.seg_rgba, angle_deg, axes=(0,1), reshape=False, order=0, mode='constant', cval=0,)
 
-    # ---------------- Load new volume ----------------
-    def _load_new_volume(self):
+    # ---------- Selecting Main Volume showed (T1 or T2) -----------------
+    def _change_modality(self):
+        if self.t1_radio.isChecked():
+            if self.t1_volume is not None:
+                self.current_modality = "T1"
+                self.volume = self.t1_volume
+                self.affine = self.t1_affine
+        else:
+            if self.t2_volume is not None:
+                self.current_modality = "T2"
+                self.volume = self.t2_volume
+                self.affine = self.t2_affine
+
+        self._update_all()
+
+    # ---------------- Load volume ----------------
+    def _load_t1_volume(self):
         path, _ = QtWidgets.QFileDialog.getOpenFileName(
             self, "Load NIfTI File", "", "NIfTI (*.nii *.nii.gz)"
         )
         if not path:
             return
+        self._load_new_volume(path, modality="T1")
+        self.t1_radio.setChecked(True)
+        self.t1_radio.setEnabled(True)
+        self.current_modality = "T1"
 
+    def _load_t2_volume(self):
+        path, _ = QtWidgets.QFileDialog.getOpenFileName(
+            self, "Load T2 NIfTI", "", "NIfTI Files (*.nii *.nii.gz)"
+        )
+        if not path:
+            return
+        self._load_new_volume(path, modality="T2")
+        self.t2_radio.setChecked(True)
+        self.t2_radio.setEnabled(True)
+        self.current_modality = "T2"
+
+    def _load_new_volume(self, path: str, modality: str = "T1"):
         data, aff = load_volume(path)
-        self.volume = data.astype(float)
-        self.affine = aff
+        # If shape changes, update sliders etc
+        if modality == "T1":
+            self.t1_volume = data.astype(float)
+            self.t1_affine = aff
+            self.volume = self.t1_volume
+            self.affine = self.t1_affine
+        else:  # T2
+            self.t2_volume = data.astype(float)
+            self.t2_affine = aff
+            self.volume = self.t2_volume
+            self.affine = self.t2_affine
+
         self.shape = self.volume.shape[:3]
         self.pos = [s // 2 for s in self.shape]  # initial crosshair at center
         self.is_rgb = (self.volume.ndim == 4 and self.volume.shape[-1] == 3)
@@ -902,23 +964,7 @@ class ViewerApp(QtWidgets.QMainWindow):
         self._toggle_zoom_mode(enabled)
 
     def _test_init(self):
-        vol, aff = load_volume("./subject_001_T1_native_restored.nii.gz")
-        self.volume = vol.astype(float)
-        self.affine = aff
-        self.shape = self.volume.shape[:3]
-        self.pos = [s // 2 for s in self.shape]
-        self.is_rgb = (self.volume.ndim == 4 and self.volume.shape[-1] == 3)
-
-        # update slider ranges
-        self.axial_slider.setRange(0, self.shape[2] - 1)
-        self.coronal_slider.setRange(0, self.shape[1] - 1)
-        self.sagittal_slider.setRange(0, self.shape[0] - 1)
-        self.axial_slider.setValue(self.pos[2])
-        self.coronal_slider.setValue(self.pos[1])
-        self.sagittal_slider.setValue(self.pos[0])
-        self.axial_label.setText(str(self.pos[2] + 1))
-        self.coronal_label.setText(str(self.pos[1] + 1))
-        self.sagittal_label.setText(str(self.pos[0] + 1))
+        self._load_new_volume("./subject_001_T1_native_restored.nii.gz", modality="T1")
 
         seg, aff = load_volume("./subject_001_T1_native_structures_labeled.nii.gz")
         self.seg_volume = seg.astype(int)
