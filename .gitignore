@@ -4,3 +4,5 @@
 /*.nii
 /3d.txt
 /test_nifti_files
+/build
+/dist
