@@ -1,5 +1,5 @@
 /src/__pycache__
-/venv
+/.venv
 /*.nii.gz
 /*.nii
 /*.txt
