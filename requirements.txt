@@ -1,0 +1,6 @@
+scipy
+numpy
+nibabel
+PyQt5
+matplotlib
+pyinstaller

@@ -2,5 +2,5 @@
 /.venv
 /*.nii.gz
 /*.nii
-/*.txt
+/3d.txt
 /test_nifti_files
