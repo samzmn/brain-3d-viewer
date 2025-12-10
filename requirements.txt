@@ -3,4 +3,3 @@ numpy==2.3.5
 nibabel==5.3.3
 PyQt5==5.15.11
 matplotlib==3.10.7
-pyinstaller==6.17.0

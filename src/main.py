@@ -445,9 +445,8 @@ class ViewerApp(QtWidgets.QMainWindow):
         self.status = self.statusBar()
         self._update_status()
 
-        # initialize images and 3D
-        # self._update_all()
-        self._test_init()
+        # initialize images
+        # self._test_init()
 
     def _update_status(self):
         if self.pos is not None:
