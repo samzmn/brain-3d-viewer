@@ -1,0 +1,12 @@
+Nibabel License (Simplified BSD)
+
+Copyright (c) 2006-2025,
+Nipy Developers and Nibabel Contributors.
+All rights reserved.
+
+Redistribution and use permitted under the terms of the BSD license.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND.
+
+Full license:
+https://github.com/nipy/nibabel/blob/master/COPYING

@@ -1,0 +1,12 @@
+PyQt5 License
+
+PyQt5 is licensed under the GNU General Public License version 3.
+ 
+The GPL v3 license applies to all PyQt5 modules unless you have obtained
+a commercial license from Riverbank Computing.
+
+This means that any application using PyQt5 must be distributed under 
+the terms of the GPL v3 if it is distributed at all.
+
+For details, see:
+https://www.riverbankcomputing.com/software/pyqt/license/

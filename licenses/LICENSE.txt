@@ -1,0 +1,16 @@
+Brain 3D Viewer Application
+Copyright (c) 2025, Sam Zamani
+
+This program is free software: you can redistribute it and/or modify it
+under the terms of the GNU General Public License version 3 as published 
+by the Free Software Foundation.
+
+This program is distributed in the hope that it will be useful, but 
+WITHOUT ANY WARRANTY; without even the implied warranty of 
+MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
+
+You must retain this copyright notice and attribution to the original 
+author in all copies or substantial portions of the program.
+
+Source code repository:
+https://github.com/samzmn/brain-3d-viewer.git

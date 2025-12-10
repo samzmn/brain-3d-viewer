@@ -1,0 +1,18 @@
+NumPy License (BSD 3-Clause)
+
+Copyright (c) 2005-2025, NumPy Developers.
+All rights reserved.
+
+Redistribution and use in source and binary forms, with or without 
+modification, are permitted provided that the following conditions are met:
+
+1. Redistributions of source code must retain the above copyright notice.
+2. Redistributions in binary form must reproduce the above copyright 
+   notice in documentation.
+3. Neither the name of NumPy nor the names of its contributors may be 
+   used to endorse or promote products derived from this software.
+
+THE SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS "AS IS".
+
+Full text:
+https://numpy.org/doc/stable/license.html
