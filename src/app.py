@@ -29,8 +29,6 @@ Notes:
 
 import sys
 import os
-from turtle import color
-from typing import Tuple
 import numpy as np
 from scipy.ndimage import binary_dilation, binary_erosion, rotate
 import nibabel as nib
@@ -38,7 +36,6 @@ from PyQt5 import QtWidgets, QtCore, QtGui
 from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
 from matplotlib.figure import Figure
 import matplotlib.patches as patches
-import vtk
 from utils import load_volume
 
 # ------------------------------------------------------------
@@ -124,6 +121,15 @@ class SliceCanvas(FigureCanvas):
     
     def draw_focus_border(self):
         self.focus_rect.set_visible(self.is_focused)
+        self.draw_idle()
+
+    def show_empty(self):
+        if self.im is not None:
+            self.im.remove()
+            self.im = None
+        if self.seg is not None:
+            self.seg.remove()
+            self.seg = None
         self.draw_idle()
 
     def show_slice(self, slice2d, seg_slice2d=None):
@@ -368,6 +374,10 @@ class ViewerApp(QtWidgets.QMainWindow):
         self.zoom_checkbox.setChecked(False)
         self.zoom_checkbox.stateChanged.connect(self._toggle_zoom_mode_checkbox)
         toolbar.addWidget(self.zoom_checkbox)
+
+        reset_btn = QtWidgets.QAction("Close all files", self)
+        reset_btn.triggered.connect(self._reset_volumes)
+        toolbar.addAction(reset_btn)
 
         # ----------------------- MAIN WIDGET and layout -----------------------
         central = QtWidgets.QWidget()
@@ -724,7 +734,6 @@ class ViewerApp(QtWidgets.QMainWindow):
         elif key == "rotate_ccw":
             self._rotate_label_3d(angle_deg=+5)
         
-
     # ---------------- Move label in 3D ----------------
     def _move_label_3d(self, arrow_key):
         label = self.label_panel.selected_label
@@ -963,25 +972,44 @@ class ViewerApp(QtWidgets.QMainWindow):
         enabled = (state == QtCore.Qt.Checked)
         self._toggle_zoom_mode(enabled)
 
+    def _reset_volumes(self):
+        self.volume = None
+        self.affine = None
+        self.is_rgb = None
+        self.shape = None
+        self.pos = None
+        self.seg_volume = None
+        self.seg_rgba = None
+        self.label_colors = {}
+        self.focused_canvas = None
+        self.t1_volume = None
+        self.t1_affine = None
+        self.t2_volume = None
+        self.t2_affine = None
+        self.current_modality = "T1"
+        self.axial_canvas.show_empty()
+        self.coronal_canvas.show_empty()
+        self.sagittal_canvas.show_empty()
+
     def _test_init(self):
-        self._load_new_volume("./subject_001_T1_native_restored.nii.gz", modality="T1")
+        # self._load_new_volume("./subject_001_T1_native_restored.nii.gz", modality="T1")
+        self._load_new_volume("./test_nifti_files/001/subject_001_T1_native_high_res.nii.gz", modality="T1")
 
-        seg, aff = load_volume("./subject_001_T1_native_structures_labeled.nii.gz")
-        self.seg_volume = seg.astype(int)
-        labels = np.unique(self.seg_volume)
-        rng = np.random.default_rng(0)
-        self.label_colors = {
-            l: tuple(rng.random(3)) for l in labels if l != 0
-        }
-        self.label_panel.set_labels(self.label_colors)
-        # PRECOMPUTE RGBA SEGMENTATION
-        h, w, d = self.seg_volume.shape
-        self.seg_rgba = np.zeros((h, w, d, 4), dtype=np.float32)
-
-        for l, color in self.label_colors.items():
-            mask = (self.seg_volume == l)
-            self.seg_rgba[mask, :3] = color
-            self.seg_rgba[mask,  3] = 1.0   # alpha = 1 initially
+        # seg, aff = load_volume("./subject_001_T1_native_structures_labeled.nii.gz")
+        # self.seg_volume = seg.astype(int)
+        # labels = np.unique(self.seg_volume)
+        # rng = np.random.default_rng(0)
+        # self.label_colors = {
+        #     l: tuple(rng.random(3)) for l in labels if l != 0
+        # }
+        # self.label_panel.set_labels(self.label_colors)
+        # # PRECOMPUTE RGBA SEGMENTATION
+        # h, w, d = self.seg_volume.shape
+        # self.seg_rgba = np.zeros((h, w, d, 4), dtype=np.float32)
+        # for l, color in self.label_colors.items():
+        #     mask = (self.seg_volume == l)
+        #     self.seg_rgba[mask, :3] = color
+        #     self.seg_rgba[mask,  3] = 1.0   # alpha = 1 initially
         self._update_all()
 
 
