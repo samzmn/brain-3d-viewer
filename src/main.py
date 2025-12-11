@@ -29,6 +29,7 @@ Notes:
 
 import sys
 import os
+from typing import Tuple
 import numpy as np
 from scipy.ndimage import binary_dilation, binary_erosion, rotate
 import nibabel as nib
@@ -89,6 +90,7 @@ class SliceCanvas(FigureCanvas):
         self.ax.set_title(title)
         self.title = title
         self.shape = None
+        self.aspect = 'auto'
         self.im = None
         self.seg = None
         self.vline = None
@@ -147,7 +149,7 @@ class SliceCanvas(FigureCanvas):
 
         if self.im is None:
             self.ax.axis('off')
-            self.im = self.ax.imshow(slice2d, cmap=cmap, origin='lower', interpolation='nearest')
+            self.im = self.ax.imshow(slice2d, cmap=cmap, aspect=self.aspect, origin='lower', interpolation='nearest')
         else:
             self.im.set_data(slice2d)
             if cmap:
@@ -155,7 +157,7 @@ class SliceCanvas(FigureCanvas):
         
         if self.seg is None:
             if seg_slice2d is not None:
-                self.seg = self.ax.imshow(seg_slice2d, origin='lower', interpolation='nearest')
+                self.seg = self.ax.imshow(seg_slice2d, aspect=self.aspect, origin='lower', interpolation='nearest')
         else:
             if seg_slice2d is not None:
                 self.seg.set_data(seg_slice2d)
@@ -446,7 +448,7 @@ class ViewerApp(QtWidgets.QMainWindow):
         self._update_status()
 
         # initialize images
-        # self._test_init()
+        self._test_init()
 
     def _update_status(self):
         if self.pos is not None:
@@ -461,7 +463,7 @@ class ViewerApp(QtWidgets.QMainWindow):
         overlay = np.fliplr(overlay)
         return overlay
 
-    def _get_axial(self) -> np.ndarray:
+    def _get_axial(self) -> Tuple[np.ndarray, np.ndarray]:
         slice2d = self.volume[:, :, self.pos[2], :] if self.is_rgb else self.volume[:, :, self.pos[2]]
         slice2d = np.fliplr(slice2d.T)  # transpose for correct orientation
         if self.seg_rgba is not None and self.seg_checkbox.isChecked():
@@ -470,7 +472,7 @@ class ViewerApp(QtWidgets.QMainWindow):
             seg_slice2d = None
         return slice2d, seg_slice2d
 
-    def _get_coronal(self) -> np.ndarray:
+    def _get_coronal(self) -> Tuple[np.ndarray, np.ndarray]:
         slice2d = self.volume[:, self.pos[1], :, :] if self.is_rgb else self.volume[:, self.pos[1], :]
         slice2d = np.fliplr(slice2d.T)  # transpose for correct orientation
         if self.seg_rgba is not None and self.seg_checkbox.isChecked():
@@ -479,7 +481,7 @@ class ViewerApp(QtWidgets.QMainWindow):
             seg_slice2d = None
         return slice2d, seg_slice2d
 
-    def _get_sagittal(self) -> np.ndarray:
+    def _get_sagittal(self) -> Tuple[np.ndarray, np.ndarray]:
         slice2d = self.volume[self.pos[0], :, :, :] if self.is_rgb else self.volume[self.pos[0], :, :]
         slice2d = np.fliplr(slice2d.T)  # transpose for correct orientation
         if self.seg_rgba is not None and self.seg_checkbox.isChecked():
@@ -886,9 +888,20 @@ class ViewerApp(QtWidgets.QMainWindow):
             self.volume = self.t2_volume
             self.affine = self.t2_affine
 
+        if self.t1_affine is not None and self.t2_affine is not None:
+            if not np.allclose(self.t1_affine, self.t2_affine):
+                print("Warning: images are not aligned in world space")
+
         self.shape = self.volume.shape[:3]
         self.pos = [s // 2 for s in self.shape]  # initial crosshair at center
         self.is_rgb = (self.volume.ndim == 4 and self.volume.shape[-1] == 3)
+        
+        sx = np.linalg.norm(self.affine[:3,0])   # spacing along i axis (rows of data)
+        sy = np.linalg.norm(self.affine[:3,1])   # spacing along j axis (cols of data)
+        sz = np.linalg.norm(self.affine[:3,2])   # spacing along k axis (slice thickness)
+        self.axial_canvas.aspect = sy / sx
+        self.coronal_canvas.aspect = sz / sx
+        self.sagittal_canvas.aspect = sz / sy
 
         # update slider ranges
         self.axial_slider.setRange(0, self.shape[2] - 1)
