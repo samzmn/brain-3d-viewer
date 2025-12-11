@@ -448,7 +448,7 @@ class ViewerApp(QtWidgets.QMainWindow):
         self._update_status()
 
         # initialize images
-        self._test_init()
+        # self._test_init()
 
     def _update_status(self):
         if self.pos is not None:
@@ -977,6 +977,10 @@ class ViewerApp(QtWidgets.QMainWindow):
         self._update_all()
 
     def _toggle_zoom_mode(self, is_enabled: bool):
+        if is_enabled:
+            self.zoom_checkbox.setChecked(True)
+        else:
+            self.zoom_checkbox.setChecked(False)
         for c in (self.axial_canvas, self.coronal_canvas, self.sagittal_canvas):
             c.zoom_enabled = is_enabled
 
