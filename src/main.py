@@ -29,15 +29,16 @@ Notes:
 
 import sys
 import os
+import json
 from typing import Tuple
 import numpy as np
-from scipy.ndimage import binary_dilation, binary_erosion, rotate
+from scipy.ndimage import center_of_mass, binary_dilation, binary_erosion, rotate
 import nibabel as nib
 from PyQt5 import QtWidgets, QtCore, QtGui
 from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
 from matplotlib.figure import Figure
 import matplotlib.patches as patches
-from utils import load_volume
+from utils import load_volume, label_structure
 
 # ------------------------------------------------------------
 # LabelPanel: shows label colors + selection
@@ -63,21 +64,25 @@ class LabelPanel(QtWidgets.QWidget):
 
         self.selected_label = None
 
-    def set_labels(self, seg_colors):
+    def set_labels(self, seg_colors, seg_names=None):
         self.label_list.clear()
-        for label, color in seg_colors.items():
-            item = QtWidgets.QListWidgetItem(f"Label {label}")
+        for index, color in seg_colors.items():
+            if seg_names is not None:
+                label_name = seg_names[index]["name"]
+                item = QtWidgets.QListWidgetItem(f"{index} . {label_name}")
+            else:
+                item = QtWidgets.QListWidgetItem(f"Label {index}")
             pix = QtGui.QPixmap(20,20)
             pix.fill(QtGui.QColor(*(int(c*255) for c in color)))
             item.setIcon(QtGui.QIcon(pix))
-            item.setData(QtCore.Qt.UserRole, label)
+            item.setData(QtCore.Qt.UserRole, index)
             self.label_list.addItem(item)
 
     def on_item_clicked(self, item):
-        label = item.data(QtCore.Qt.UserRole)
-        self.current_label_display.setText(f"Selected Label: {label}")
-        self.label_selected.emit(label)
-        self.selected_label = label
+        label_idx = item.data(QtCore.Qt.UserRole)
+        self.current_label_display.setText(f"Selected Label: {label_idx}")
+        self.label_selected.emit(label_idx)
+        self.selected_label = label_idx
         
 class SliceCanvas(FigureCanvas):
     """A matplotlib canvas showing a single 2D slice with a red crosshair."""
@@ -102,8 +107,6 @@ class SliceCanvas(FigureCanvas):
         self.on_drag = None # callback (xpix, ypix, event) -> None
         self.cid_release = None
         self.on_scroll = None # callback: (step, event)
-        # self.cid_key_press = None
-        # self.on_key_press = None # callback: (event)
 
         self.is_focused = False
         self.zoom_enabled = False # controlled by ViewerApp checkbox
@@ -298,9 +301,6 @@ class SliceCanvas(FigureCanvas):
 
         self.draw_idle()
 
-    # def _on_key_press(self, event):
-    #     if self.on_key_press is not None:
-    #         self.on_key_press(event)
 
 class ViewerApp(QtWidgets.QMainWindow):
     def __init__(self):
@@ -314,6 +314,7 @@ class ViewerApp(QtWidgets.QMainWindow):
         self.seg_volume = None
         self.seg_rgba = None
         self.label_colors = {}
+        self.structures = None # dict of mapping from label index to its prperty dict
         self.focused_canvas = None
         self.t1_volume = None
         self.t1_affine = None
@@ -434,10 +435,6 @@ class ViewerApp(QtWidgets.QMainWindow):
         self.coronal_canvas.on_scroll = self._on_coronal_scroll
         self.sagittal_canvas.on_scroll = self._on_sagittal_scroll
 
-        # self.axial_canvas.on_key_press = self._on_key_press
-        # self.coronal_canvas.on_key_press = self._on_key_press
-        # self.sagittal_canvas.on_key_press = self._on_key_press
-
         QtWidgets.QApplication.instance().installEventFilter(self)
 
         # ----------- layout with label + slider + maximize button -----------
@@ -450,6 +447,7 @@ class ViewerApp(QtWidgets.QMainWindow):
         # initialize images
         # self._test_init()
 
+    # ---------------- Status bar update ----------------
     def _update_status(self):
         if self.pos is not None:
             self.status.showMessage(f'pos (x,y,z): {self.pos[0]}, {self.pos[1]}, {self.pos[2]}')
@@ -735,7 +733,7 @@ class ViewerApp(QtWidgets.QMainWindow):
         elif key == "rotate_ccw":
             self._rotate_label_3d(angle_deg=+5)
         
-    # ---------------- Move label in 3D ----------------
+    # ---------------- Label manipulation in 3D ----------------
     def _move_label_3d(self, arrow_key):
         label = self.label_panel.selected_label
         rgba = self.seg_rgba
@@ -795,35 +793,111 @@ class ViewerApp(QtWidgets.QMainWindow):
 
     def _resize_label_3d(self, sign):
         """
-        sign = '+' expand (dilate)
-        sign = '-' shrink (erode)
+        sign = '+' expand based on probability threshold (preferred)
+        sign = '-' shrink based on probability threshold (preferred)
+        OR fallback morphological dilation/erosion.
         """
-
-        label = self.label_panel.selected_label
+        label_idx = self.label_panel.selected_label
         rgba = self.seg_rgba.copy()
         H, W, D, _ = rgba.shape
 
         # RGBA color tuple for this label
-        color = np.array(self.label_colors[label] + (1.0,), dtype=np.float32)
+        color = np.array(self.label_colors[label_idx] + (1.0,), dtype=np.float32)
 
-        # Step 1 — get 3D mask
-        mask = np.all(rgba == color, axis=-1)   # shape (H,W,D)
-        if not np.any(mask):
+        # Extract old mask (3D boolean mask)
+        old_mask  = np.all(rgba == color, axis=-1)   # shape (H,W,D)
+        if not np.any(old_mask ):
             return
+        
+        def place_new_structure(prob_map, threshold):
+            # Build new labeled mask from probability map
+            new_label_map = label_structure(prob_map, label_idx, threshold)   # uint8
+            new_mask_global = new_label_map == label_idx
 
-        # Step 2 — morphological op
+            if not np.any(new_mask_global):
+                # nothing to place -> erase old and exit
+                rgba[old_mask] = [0,0,0,0]
+                self.seg_rgba = rgba
+                self._update_all()
+                return
+
+            # Compute CoM BEFORE and AFTER
+            old_com = center_of_mass(old_mask.astype(float))
+            new_com = center_of_mass(new_mask_global.astype(float))
+
+            # For example: old_com = (y, x, z)
+            # Always convert to np.array for vector arithmetic
+            old_com = np.array(old_com)
+            new_com = np.array(new_com)
+
+            # Compute shift vector to align CoMs
+            shift = old_com - new_com   # vector of floats such as (dy, dx, dz)
+            shift = np.round(shift).astype(int)  # voxel shift
+
+            # Shift new mask safely into volume
+            new_mask_shifted = np.zeros_like(new_mask_global, dtype=bool)
+
+            ys, xs, zs = np.where(new_mask_global)
+            ys2 = ys + shift[0]
+            xs2 = xs + shift[1]
+            zs2 = zs + shift[2]
+
+            # Keep only points inside valid volume space
+            valid = (
+                (ys2 >= 0) & (ys2 < H) &
+                (xs2 >= 0) & (xs2 < W) &
+                (zs2 >= 0) & (zs2 < D)
+            )
+            ys2 = ys2[valid]
+            xs2 = xs2[valid]
+            zs2 = zs2[valid]
+            new_mask_shifted[ys2, xs2, zs2] = True
+
+            # Replace old voxels with background, write new voxels
+            rgba[old_mask] = [0,0,0,0]
+            rgba[new_mask_shifted] = color
+
+            self.seg_rgba = rgba
+            self._update_all()
+        
+        # If structure probability map is available -> use threshold method
+        if self.structures is not None:
+            thresholds = [0.05, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 0.95]
+            threshold_idx = self.structures[label_idx]["threshold"]
+            if threshold_idx >= 0 and threshold_idx <= 10:
+                prob_map = self.structures[label_idx]["nifti"]
+                if sign == "+":
+                    threshold_idx -= 1
+                    self.structures[label_idx]["threshold"] = threshold_idx
+                    if threshold_idx >= 0:
+                        place_new_structure(prob_map, threshold = thresholds[threshold_idx])
+                        return
+                if sign == "-":
+                    threshold_idx += 1
+                    self.structures[label_idx]["threshold"] = threshold_idx
+                    if threshold_idx <= 10:
+                        place_new_structure(prob_map, threshold = thresholds[threshold_idx])
+                        return
+            else:
+                if sign == "+":
+                    threshold_idx -= 1
+                elif sign == "-":
+                    threshold_idx += 1
+                self.structures[label_idx]["threshold"] = threshold_idx
+
+        # morphological op
         if sign == "+":
-            new_mask = binary_dilation(mask, iterations=1)
+            new_mask = binary_dilation(old_mask, iterations=1)
         else:  # sign == "-"
-            new_mask = binary_erosion(mask, iterations=1)
+            new_mask = binary_erosion(old_mask, iterations=1)
 
-        # Step 3 — erase old voxels
-        rgba[mask] = [0,0,0,0]
+        # erase old voxels
+        rgba[old_mask] = [0,0,0,0]
 
-        # Step 4 — write new voxels
+        # write new voxels
         rgba[new_mask] = color
 
-        # Step 5 — update state
+        # update state
         self.seg_rgba = rgba
         self._update_all()
 
@@ -930,13 +1004,41 @@ class ViewerApp(QtWidgets.QMainWindow):
         self.label_colors = {
             l: tuple(rng.random(3)) for l in labels if l != 0
         }
-        self.label_panel.set_labels(self.label_colors)
         # PRECOMPUTE RGBA SEGMENTATION
         self._label_to_rgba(self.seg_volume)
+
+        # Read dictionary back from JSON file
+        try:
+            json_path = os.path.join(os.path.dirname(path), os.path.basename(path).replace("structures_labeled.nii.gz", "labels.json"))
+            print(json_path)
+            with open(json_path, "r") as f:
+                structures = json.load(f)
+                print(structures)
+                self.structures = dict()
+                for label_name, index in structures.items():
+                    print(label_name, index)
+                    structure = dict()
+                    structure["name"] = label_name
+                    structure["threshold"] = 6
+                    structure_path = os.path.join(os.path.dirname(path), "labels", label_name + "_prob_in_" + os.path.basename(path).replace("_structures_labeled", ""))
+                    structure["nifti"] = self._load_segmentation_structure(structure_path)
+                    self.structures[index] = structure
+        except:
+            print("No data.json file found for loading label names.")
+
+        self.label_panel.set_labels(self.label_colors, self.structures)
         self._update_all()
+
+    def _load_segmentation_structure(self, path: str):
+        print(path)
+        data, aff = load_volume(path)
+        return data.astype(float)
 
     def _reload_segmentation_nifti(self):
         self._label_to_rgba(self.seg_volume)
+        if self.structures is not None:
+            for label_idx in self.structures.keys():
+                self.structures[label_idx]["threshold"] = 6
         self._update_all()
 
     def _label_to_rgba(self, seg_volume:np.ndarray) -> None:
@@ -997,6 +1099,7 @@ class ViewerApp(QtWidgets.QMainWindow):
         self.seg_volume = None
         self.seg_rgba = None
         self.label_colors = {}
+        self.structures = None
         self.focused_canvas = None
         self.t1_volume = None
         self.t1_affine = None
@@ -1009,7 +1112,7 @@ class ViewerApp(QtWidgets.QMainWindow):
 
     def _test_init(self):
         # self._load_new_volume("./subject_001_T1_native_restored.nii.gz", modality="T1")
-        self._load_new_volume("./test_nifti_files/001/subject_001_T1_native_high_res.nii.gz", modality="T1")
+        self._load_new_volume("./test_nifti_files/001/subject_001_T1_pre.nii.gz", modality="T1")
 
         # seg, aff = load_volume("./subject_001_T1_native_structures_labeled.nii.gz")
         # self.seg_volume = seg.astype(int)
