@@ -39,6 +39,7 @@ from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
 from matplotlib.figure import Figure
 import matplotlib.patches as patches
 from utils import load_volume, label_structure
+from enhance import compute_volume_normalization, apply_volume_normalization, enhance_slice
 
 # ------------------------------------------------------------
 # LabelPanel: shows label colors + selection
@@ -321,10 +322,16 @@ class ViewerApp(QtWidgets.QMainWindow):
         self.t2_volume = None
         self.t2_affine = None
         self.current_modality = "T1"   # "T1" or "T2"
+        self.brainmask = None
+        self.second_rio_mask = None
+        self.third_roi_mask = None
+        self.fgatir_volume = None
+        self.pca_volume = None
+        self.fa_volume = None
 
         # ----------------------- TOP TOOL BAR -----------------------
         toolbar = QtWidgets.QToolBar("MainToolbar")
-        self.addToolBar(toolbar)
+        self.addToolBar(QtCore.Qt.TopToolBarArea, toolbar)
 
         load_btn = QtWidgets.QAction("Load T1 NIfTI...", self)
         load_btn.triggered.connect(self._load_t1_volume)
@@ -381,6 +388,16 @@ class ViewerApp(QtWidgets.QMainWindow):
         reset_btn = QtWidgets.QAction("Close all files", self)
         reset_btn.triggered.connect(self._reset_volumes)
         toolbar.addAction(reset_btn)
+
+        # Second toolbar
+        self.addToolBarBreak()            # force new row
+        toolbar2 = QtWidgets.QToolBar("SecondaryToolbar")
+        self.addToolBar(QtCore.Qt.TopToolBarArea, toolbar2)
+
+        self.filter_checkbox = QtWidgets.QCheckBox("Apply Filter")
+        self.filter_checkbox.setChecked(False)
+        self.filter_checkbox.stateChanged.connect(self._toggle_filter_checkbox)
+        toolbar2.addWidget(self.filter_checkbox)
 
         # ----------------------- MAIN WIDGET and layout -----------------------
         central = QtWidgets.QWidget()
@@ -464,6 +481,15 @@ class ViewerApp(QtWidgets.QMainWindow):
     def _get_axial(self) -> Tuple[np.ndarray, np.ndarray]:
         slice2d = self.volume[:, :, self.pos[2], :] if self.is_rgb else self.volume[:, :, self.pos[2]]
         slice2d = np.fliplr(slice2d.T)  # transpose for correct orientation
+        if self.filter_checkbox.isChecked():
+            slice2d = enhance_slice(base_slice=slice2d,
+                                    brainmask=np.fliplr(self.brainmask[:, :, self.pos[2]]).T,
+                                    roi_mask=np.fliplr(self.second_roi_mask[:, :, self.pos[2]]).T,
+                                    core_roi=np.fliplr(self.third_roi_mask[:, :, self.pos[2]]).T,
+                                    # fgatir=np.fliplr(self.fgatir_volume[:, :, self.pos[2]]).T,
+                                    # pca=np.fliplr(self.pca_volume[:, :, self.pos[2]]).T,
+                                    # fa=np.fliplr(self.fa_volume[:, :, self.pos[2]]).T,
+                                    )
         if self.seg_rgba is not None and self.seg_checkbox.isChecked():
             seg_slice2d = self._make_seg_overlay(self.seg_rgba[:, :, self.pos[2]])
         else:
@@ -925,6 +951,22 @@ class ViewerApp(QtWidgets.QMainWindow):
 
         self._update_all()
 
+    def _toggle_filter_checkbox(self, state):
+        enabled = (state == QtCore.Qt.Checked)
+        # if enabled:
+        #     self.volume = self._apply_volume_normalization(self.t1_volume, self.brainmask)
+        # else:
+        #     self.volume = self.t1_volume
+        self._update_all()
+
+    def _apply_volume_normalization(self, volume: np.ndarray, brainmask: np.ndarray = None):
+        lo, hi = compute_volume_normalization(volume, np.ones_like(volume, dtype=bool), pmin=5, pmax=95)
+        vol = apply_volume_normalization(volume, lo, hi)
+        if brainmask is not None:
+            lo, hi = compute_volume_normalization(vol, brainmask, pmin=1, pmax=99)
+            vol = apply_volume_normalization(vol, lo, hi)
+        return vol
+
     # ---------------- Load volume ----------------
     def _load_t1_volume(self):
         path, _ = QtWidgets.QFileDialog.getOpenFileName(
@@ -937,6 +979,27 @@ class ViewerApp(QtWidgets.QMainWindow):
         self.t1_radio.setEnabled(True)
         self.current_modality = "T1"
 
+        patient_id = os.path.basename(path).split("_")[1]
+        masks_path = os.path.join(os.path.dirname(path), "masks")
+        self.brainmask = load_volume(os.path.join(masks_path, f"brain_mask_of_subject_{patient_id}.nii.gz"))[0].astype(bool)
+        self.second_roi_mask = load_volume(os.path.join(masks_path, f"second_subcortical_mask_of_subject_{patient_id}.nii.gz"))[0].astype(bool)
+        self.third_roi_mask = load_volume(os.path.join(masks_path, f"third_subcortical_mask_of_subject_{patient_id}.nii.gz"))[0].astype(bool)
+        # fgatir = load_volume(os.path.join(masks_path, f"fgatir_of_subject_{patient_id}.nii.gz"))[0].astype(float)
+        # self.fgatir_volume = self._apply_volume_normalization(fgatir)
+        # self.pca_volume = load_volume(os.path.join(masks_path, f"pca_of_subject_{patient_id}.nii.gz"))[0].astype(float)
+        # self.pca_volume = self._apply_volume_normalization(self.pca_volume)
+        # self.fa_volume = load_volume(os.path.join(masks_path, f"fa_of_subject_{patient_id}.nii.gz"))[0].astype(float)
+        # self.fa_volume = self._apply_volume_normalization(self.fa_volume)
+        # print("brain mask shape:", self.brainmask.shape)
+        # print("second roi mask shape:", self.second_roi_mask.shape)
+        # print("third roi mask shape:", self.third_roi_mask.shape)
+        # print("fgatir shape:", self.fgatir_volume.shape)
+        # print("pca shape:", self.pca_volume.shape)
+        # print("fa shape:", self.fa_volume.shape)
+        self.filter_checkbox.setEnabled(True)
+        self.volume = self._apply_volume_normalization(self.t1_volume, self.brainmask)
+        self._update_all()
+
     def _load_t2_volume(self):
         path, _ = QtWidgets.QFileDialog.getOpenFileName(
             self, "Load T2 NIfTI", "", "NIfTI Files (*.nii *.nii.gz)"
@@ -947,6 +1010,7 @@ class ViewerApp(QtWidgets.QMainWindow):
         self.t2_radio.setChecked(True)
         self.t2_radio.setEnabled(True)
         self.current_modality = "T2"
+        self._update_all()
 
     def _load_new_volume(self, path: str, modality: str = "T1"):
         data, aff = load_volume(path)
@@ -987,8 +1051,6 @@ class ViewerApp(QtWidgets.QMainWindow):
         self.axial_label.setText(str(self.pos[2] + 1))
         self.coronal_label.setText(str(self.pos[1] + 1))
         self.sagittal_label.setText(str(self.pos[0] + 1))
-
-        self._update_all()
 
     def _load_segmentation_nifti(self):
         path, _ = QtWidgets.QFileDialog.getOpenFileName(self, "Load Segmentation", "", "NIfTI (*.nii *.nii.gz)")
