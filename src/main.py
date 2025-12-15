@@ -324,7 +324,7 @@ class ViewerApp(QtWidgets.QMainWindow):
         self.current_modality = "T1"   # "T1" or "T2"
         self.brainmask = None
         self.second_rio_mask = None
-        self.third_roi_mask = None
+        # self.third_roi_mask = None
         # self.fgatir_volume = None
         # self.pca_volume = None
         # self.fa_volume = None
@@ -492,7 +492,7 @@ class ViewerApp(QtWidgets.QMainWindow):
         self._update_status()
 
         # initialize images
-        self._test_init()
+        # self._test_init()
 
     # ---------------- Status bar update ----------------
     def _update_status(self):
@@ -606,7 +606,7 @@ class ViewerApp(QtWidgets.QMainWindow):
         self.axial_canvas.show_slice(*self._get_axial())
         self.coronal_canvas.show_slice(*self._get_coronal())
         self.sagittal_canvas.show_slice(*self._get_sagittal())
-        self.axial_canvas_2.show_slice(*self._get_normal_axial())
+        # self.axial_canvas_2.show_slice(*self._get_normal_axial())
 
         # update crosshairs: compute pixel coords for each canvas
         self.axial_canvas.set_crosshair(self.shape[0] - self.pos[0], self.pos[1])
