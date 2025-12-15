@@ -39,7 +39,7 @@ from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
 from matplotlib.figure import Figure
 import matplotlib.patches as patches
 from utils import load_volume, label_structure
-from enhance import compute_volume_normalization, apply_volume_normalization, enhance_slice
+import enhance
 
 # ------------------------------------------------------------
 # LabelPanel: shows label colors + selection
@@ -325,9 +325,9 @@ class ViewerApp(QtWidgets.QMainWindow):
         self.brainmask = None
         self.second_rio_mask = None
         self.third_roi_mask = None
-        self.fgatir_volume = None
-        self.pca_volume = None
-        self.fa_volume = None
+        # self.fgatir_volume = None
+        # self.pca_volume = None
+        # self.fa_volume = None
 
         # ----------------------- TOP TOOL BAR -----------------------
         toolbar = QtWidgets.QToolBar("MainToolbar")
@@ -394,10 +394,36 @@ class ViewerApp(QtWidgets.QMainWindow):
         toolbar2 = QtWidgets.QToolBar("SecondaryToolbar")
         self.addToolBar(QtCore.Qt.TopToolBarArea, toolbar2)
 
-        self.filter_checkbox = QtWidgets.QCheckBox("Apply Filter")
+        self.filter_checkbox = QtWidgets.QCheckBox("Apply Filter ")
         self.filter_checkbox.setChecked(False)
         self.filter_checkbox.stateChanged.connect(self._toggle_filter_checkbox)
         toolbar2.addWidget(self.filter_checkbox)
+
+        self.contrast_checkbox = QtWidgets.QCheckBox("Contrast: ")
+        self.contrast_checkbox.setChecked(False)
+        self.contrast_checkbox.stateChanged.connect(self._update_all)
+        self.contrast_checkbox.stateChanged.connect(self._reset_default_filter_values)
+        toolbar2.addWidget(self.contrast_checkbox)
+
+        self.contrast_slider = QtWidgets.QSlider(QtCore.Qt.Horizontal)
+        self.contrast_slider.setMinimum(0)
+        self.contrast_slider.setMaximum(50)
+        self.contrast_slider.setValue(12)
+        self.contrast_slider.setSingleStep(1)
+        self.contrast_slider.valueChanged.connect(self._on_clahe_slider_change)
+        toolbar2.addWidget(QtWidgets.QLabel(""))
+        toolbar2.addWidget(self.contrast_slider)
+
+        self.denoise_slider = QtWidgets.QSlider(QtCore.Qt.Horizontal)
+        self.denoise_slider.setMinimum(0)
+        self.denoise_slider.setMaximum(100)
+        self.denoise_slider.setValue(60)
+        self.denoise_slider.setSingleStep(5)
+        self.denoise_slide_label = QtWidgets.QLabel("Denoise: 0.6")
+        self.denoise_slider.valueChanged.connect(self._update_all)
+        self.denoise_slider.valueChanged.connect(lambda value: self.denoise_slide_label.setText(f"Denoise: {value/100:.1f} "))
+        toolbar2.addWidget(self.denoise_slide_label)
+        toolbar2.addWidget(self.denoise_slider)
 
         # ----------------------- MAIN WIDGET and layout -----------------------
         central = QtWidgets.QWidget()
@@ -440,6 +466,7 @@ class ViewerApp(QtWidgets.QMainWindow):
         self.axial_canvas = SliceCanvas(self, title="axial",)
         self.coronal_canvas = SliceCanvas(self, title="coronal",)
         self.sagittal_canvas = SliceCanvas(self, title="sagittal",)
+        self.axial_canvas_2 = SliceCanvas(self, title="")
 
         for c in (self.axial_canvas, self.coronal_canvas, self.sagittal_canvas):
             c.enable_interaction()  
@@ -457,17 +484,31 @@ class ViewerApp(QtWidgets.QMainWindow):
         # ----------- layout with label + slider + maximize button -----------
         self._rebuild_grid_layout()
 
+        self.move(100, 100)
+        self.showMaximized()
+
         # status bar text
         self.status = self.statusBar()
         self._update_status()
 
         # initialize images
-        # self._test_init()
+        self._test_init()
 
     # ---------------- Status bar update ----------------
     def _update_status(self):
         if self.pos is not None:
             self.status.showMessage(f'pos (x,y,z): {self.pos[0]}, {self.pos[1]}, {self.pos[2]}')
+
+    def _reset_default_filter_values(self):
+        if self.current_modality == "T1":
+            self.contrast_slider.setValue(20)
+            self.denoise_slider.setValue(40)
+        else:
+            self.contrast_slider.setValue(15)
+            self.denoise_slider.setValue(60)
+
+    def _on_clahe_slider_change(self, value):
+        self._update_all()
 
     # ---------------- 2D slices ----------------
     def _make_seg_overlay(self, seg2d):
@@ -478,18 +519,32 @@ class ViewerApp(QtWidgets.QMainWindow):
         overlay = np.fliplr(overlay)
         return overlay
 
+    def _get_normal_axial(self) -> Tuple[np.ndarray, np.ndarray]:
+        if self.axial_canvas_2.ax is not None:
+            self.axial_canvas_2.ax.set_xlim(50, self.volume.shape[0] - 50)
+            self.axial_canvas_2.ax.set_ylim(50, self.volume.shape[1] - 50)
+        slice2d = self.volume[:, :, self.pos[2]]
+        slice2d = np.fliplr(slice2d.T)
+        return slice2d, None
+    
     def _get_axial(self) -> Tuple[np.ndarray, np.ndarray]:
         slice2d = self.volume[:, :, self.pos[2], :] if self.is_rgb else self.volume[:, :, self.pos[2]]
+        # slice2d = axial_slab_average(self.volume.copy(), self.pos[2])
         slice2d = np.fliplr(slice2d.T)  # transpose for correct orientation
-        if self.filter_checkbox.isChecked():
-            slice2d = enhance_slice(base_slice=slice2d,
-                                    brainmask=np.fliplr(self.brainmask[:, :, self.pos[2]]).T,
-                                    roi_mask=np.fliplr(self.second_roi_mask[:, :, self.pos[2]]).T,
-                                    core_roi=np.fliplr(self.third_roi_mask[:, :, self.pos[2]]).T,
-                                    # fgatir=np.fliplr(self.fgatir_volume[:, :, self.pos[2]]).T,
-                                    # pca=np.fliplr(self.pca_volume[:, :, self.pos[2]]).T,
-                                    # fa=np.fliplr(self.fa_volume[:, :, self.pos[2]]).T,
-                                    )
+        if self.contrast_checkbox.isChecked() and self.filter_checkbox.isChecked():
+            denoise_value = self.denoise_slider.value() / 100
+            slice2d = enhance.roi_denoise(slice2d, np.fliplr(self.second_roi_mask[:, :, self.pos[2]]).T, sigma=denoise_value)
+            if self.current_modality == "T1":
+                contrast_value = self.contrast_slider.value()
+                slice2d = enhance.roi_window_tighten(slice2d, np.fliplr(self.second_roi_mask[:, :, self.pos[2]]).T, low_pct=contrast_value, high_pct=100 - contrast_value)
+                # slice2d = enhance.roi_clahe(slice2d, np.fliplr(self.second_roi_mask[:, :, self.pos[2]]).T, kernel_size=16, clip_limit=0.01, blend=0.3)
+                # slice2d = enhance.roi_dog_enhance(slice2d, np.fliplr(self.second_roi_mask[:, :, self.pos[2]]).T, sigma_low=0.6, sigma_high=1.2, amount=0.25)
+            else:
+                contrast_value = self.contrast_slider.value() / 1000
+                slice2d = enhance.roi_clahe(slice2d, np.fliplr(self.second_roi_mask[:, :, self.pos[2]]).T, kernel_size=24, clip_limit=contrast_value, blend=0.5)
+                slice2d = enhance.roi_window_tighten(slice2d, np.fliplr(self.second_roi_mask[:, :, self.pos[2]]).T, low_pct=1, high_pct=99)
+            print(denoise_value, contrast_value)
+
         if self.seg_rgba is not None and self.seg_checkbox.isChecked():
             seg_slice2d = self._make_seg_overlay(self.seg_rgba[:, :, self.pos[2]])
         else:
@@ -519,6 +574,7 @@ class ViewerApp(QtWidgets.QMainWindow):
         self.axial_canvas.show_slice(*self._get_axial())
         self.coronal_canvas.show_slice(*self._get_coronal())
         self.sagittal_canvas.show_slice(*self._get_sagittal())
+        self.axial_canvas_2.show_slice(*self._get_normal_axial())
 
         # update crosshairs: compute pixel coords for each canvas
         self.axial_canvas.set_crosshair(self.shape[0] - self.pos[0], self.pos[1])
@@ -642,10 +698,14 @@ class ViewerApp(QtWidgets.QMainWindow):
         sagittal_row.addWidget(self.sagittal_max_btn)
         grid.addLayout(sagittal_row, 2, 0)
 
+        axial_row_2 = QtWidgets.QHBoxLayout()
+        grid.addLayout(axial_row_2, 2, 1)
+
         # 3) Re-add canvases
         grid.addWidget(self.axial_canvas,    1, 0)
         grid.addWidget(self.coronal_canvas,  1, 1)
         grid.addWidget(self.sagittal_canvas, 3, 0)
+        grid.addWidget(self.axial_canvas_2,  3, 1)
 
         # 4) Restore good stretch factors
         grid.setRowStretch(1, 1)
@@ -941,31 +1001,41 @@ class ViewerApp(QtWidgets.QMainWindow):
         if self.t1_radio.isChecked():
             if self.t1_volume is not None:
                 self.current_modality = "T1"
-                self.volume = self.t1_volume
+                if self.filter_checkbox.isChecked():
+                    self.volume = self._apply_volume_normalization(self.t1_volume, self.brainmask, pmin=5, pmax=95)
+                else:
+                    self.volume = self.t1_volume
                 self.affine = self.t1_affine
         else:
             if self.t2_volume is not None:
                 self.current_modality = "T2"
-                self.volume = self.t2_volume
+                if self.filter_checkbox.isChecked():
+                    self.volume = self._apply_volume_normalization(self.t2_volume, self.brainmask, pmin=3, pmax=97)
+                else:
+                    self.volume = self.t2_volume
                 self.affine = self.t2_affine
 
         self._update_all()
 
     def _toggle_filter_checkbox(self, state):
         enabled = (state == QtCore.Qt.Checked)
-        # if enabled:
-        #     self.volume = self._apply_volume_normalization(self.t1_volume, self.brainmask)
-        # else:
-        #     self.volume = self.t1_volume
+        if enabled:
+            if self.current_modality == "T1":
+                self.volume = self._apply_volume_normalization(self.t1_volume, self.brainmask, pmin=5, pmax=95)
+            else:
+                self.volume = self._apply_volume_normalization(self.t2_volume, self.brainmask, pmin=3, pmax=97)
+        else:
+            if self.current_modality == "T1":
+                self.volume = self.t1_volume
+            else:
+                self.volume = self.t2_volume
         self._update_all()
 
-    def _apply_volume_normalization(self, volume: np.ndarray, brainmask: np.ndarray = None):
-        lo, hi = compute_volume_normalization(volume, np.ones_like(volume, dtype=bool), pmin=5, pmax=95)
-        vol = apply_volume_normalization(volume, lo, hi)
-        if brainmask is not None:
-            lo, hi = compute_volume_normalization(vol, brainmask, pmin=1, pmax=99)
-            vol = apply_volume_normalization(vol, lo, hi)
-        return vol
+    def _apply_volume_normalization(self, volume: np.ndarray, brainmask: np.ndarray = None, pmin=1, pmax=99) -> np.ndarray:
+        if brainmask is None:
+            brainmask = np.ones_like(volume, dtype=bool)
+        lo, hi = enhance.compute_volume_normalization(volume, brainmask, pmin, pmax)
+        return enhance.apply_volume_normalization(volume, lo, hi)
 
     # ---------------- Load volume ----------------
     def _load_t1_volume(self):
@@ -981,9 +1051,9 @@ class ViewerApp(QtWidgets.QMainWindow):
 
         patient_id = os.path.basename(path).split("_")[1]
         masks_path = os.path.join(os.path.dirname(path), "masks")
-        self.brainmask = load_volume(os.path.join(masks_path, f"brain_mask_of_subject_{patient_id}.nii.gz"))[0].astype(bool)
-        self.second_roi_mask = load_volume(os.path.join(masks_path, f"second_subcortical_mask_of_subject_{patient_id}.nii.gz"))[0].astype(bool)
-        self.third_roi_mask = load_volume(os.path.join(masks_path, f"third_subcortical_mask_of_subject_{patient_id}.nii.gz"))[0].astype(bool)
+        self.brainmask = load_volume(os.path.join(masks_path, f"brain_mask_of_subject_{patient_id}.nii.gz"))[0].astype(float)
+        self.second_roi_mask = load_volume(os.path.join(masks_path, f"second_subcortical_mask_of_subject_{patient_id}.nii.gz"))[0].astype(float)
+        self.third_roi_mask = load_volume(os.path.join(masks_path, f"third_subcortical_mask_of_subject_{patient_id}.nii.gz"))[0].astype(float)
         # fgatir = load_volume(os.path.join(masks_path, f"fgatir_of_subject_{patient_id}.nii.gz"))[0].astype(float)
         # self.fgatir_volume = self._apply_volume_normalization(fgatir)
         # self.pca_volume = load_volume(os.path.join(masks_path, f"pca_of_subject_{patient_id}.nii.gz"))[0].astype(float)
@@ -996,8 +1066,9 @@ class ViewerApp(QtWidgets.QMainWindow):
         # print("fgatir shape:", self.fgatir_volume.shape)
         # print("pca shape:", self.pca_volume.shape)
         # print("fa shape:", self.fa_volume.shape)
-        self.filter_checkbox.setEnabled(True)
+        self.filter_checkbox.setChecked(True)
         self.volume = self._apply_volume_normalization(self.t1_volume, self.brainmask)
+        # self.axial_volume = precompute_slab_volume(self.volume, axis=2, radius=1, sigma=0.8)
         self._update_all()
 
     def _load_t2_volume(self):
@@ -1040,6 +1111,7 @@ class ViewerApp(QtWidgets.QMainWindow):
         self.axial_canvas.aspect = sy / sx
         self.coronal_canvas.aspect = sz / sx
         self.sagittal_canvas.aspect = sz / sy
+        self.axial_canvas_2.aspect = sy / sx
 
         # update slider ranges
         self.axial_slider.setRange(0, self.shape[2] - 1)
@@ -1072,13 +1144,13 @@ class ViewerApp(QtWidgets.QMainWindow):
         # Read dictionary back from JSON file
         try:
             json_path = os.path.join(os.path.dirname(path), os.path.basename(path).replace("structures_labeled.nii.gz", "labels.json"))
-            print(json_path)
+            # print(json_path)
             with open(json_path, "r") as f:
                 structures = json.load(f)
-                print(structures)
+                # print(structures)
                 self.structures = dict()
                 for label_name, index in structures.items():
-                    print(label_name, index)
+                    # print(label_name, index)
                     structure = dict()
                     structure["name"] = label_name
                     structure["threshold"] = 6
@@ -1092,7 +1164,6 @@ class ViewerApp(QtWidgets.QMainWindow):
         self._update_all()
 
     def _load_segmentation_structure(self, path: str):
-        print(path)
         data, aff = load_volume(path)
         return data.astype(float)
 
@@ -1173,24 +1244,43 @@ class ViewerApp(QtWidgets.QMainWindow):
         self.sagittal_canvas.show_empty()
 
     def _test_init(self):
-        # self._load_new_volume("./subject_001_T1_native_restored.nii.gz", modality="T1")
         self._load_new_volume("./test_nifti_files/001/subject_001_T1_pre.nii.gz", modality="T1")
+        self._load_new_volume("./test_nifti_files/001/subject_001_T2_merged.nii.gz", modality="T2")
+        self.t1_radio.setEnabled(True)
+        self.t2_radio.setEnabled(True)
+        self.brainmask = load_volume("./test_nifti_files/001/masks/brain_mask_of_subject_001.nii.gz")[0].astype(int)
+        self.second_roi_mask = load_volume("./test_nifti_files/001/masks/second_subcortical_mask_of_subject_001.nii.gz")[0].astype(int)
+        self.third_roi_mask = load_volume("./test_nifti_files/001/masks/third_subcortical_mask_of_subject_001.nii.gz")[0].astype(int)
+        self.filter_checkbox.setChecked(True)
+        self.volume = self._apply_volume_normalization(self.t1_volume, self.brainmask)
+        # self.axial_volume = precompute_slab_volume(self.volume, axis=2, radius=1, sigma=0.8)
+        # print(50 * "-")
+        # print(self.axial_volume.shape)
+        seg, aff = load_volume("./test_nifti_files/001/subject_001_structures_labeled.nii.gz")
+        self.seg_volume = seg.astype(int)
+        labels = np.unique(self.seg_volume)
+        rng = np.random.default_rng(0)
+        self.label_colors = {
+            l: tuple(rng.random(3)) for l in labels if l != 0
+        }
+        # PRECOMPUTE RGBA SEGMENTATION
+        self._label_to_rgba(self.seg_volume)
+        try:
+            json_path = "./test_nifti_files/001/subject_001_labels.json"
+            with open(json_path, "r") as f:
+                structures = json.load(f)
+                self.structures = dict()
+                for label_name, index in structures.items():
+                    structure = dict()
+                    structure["name"] = label_name
+                    structure["threshold"] = 6
+                    structure_path = f"./test_nifti_files/001/labels/{label_name}_prob_in_subject_001.nii.gz"
+                    structure["nifti"] = self._load_segmentation_structure(structure_path)
+                    self.structures[index] = structure
+        except:
+            print("No data.json file found for loading label names.")
 
-        # seg, aff = load_volume("./subject_001_T1_native_structures_labeled.nii.gz")
-        # self.seg_volume = seg.astype(int)
-        # labels = np.unique(self.seg_volume)
-        # rng = np.random.default_rng(0)
-        # self.label_colors = {
-        #     l: tuple(rng.random(3)) for l in labels if l != 0
-        # }
-        # self.label_panel.set_labels(self.label_colors)
-        # # PRECOMPUTE RGBA SEGMENTATION
-        # h, w, d = self.seg_volume.shape
-        # self.seg_rgba = np.zeros((h, w, d, 4), dtype=np.float32)
-        # for l, color in self.label_colors.items():
-        #     mask = (self.seg_volume == l)
-        #     self.seg_rgba[mask, :3] = color
-        #     self.seg_rgba[mask,  3] = 1.0   # alpha = 1 initially
+        self.label_panel.set_labels(self.label_colors, self.structures)
         self._update_all()
 
 
