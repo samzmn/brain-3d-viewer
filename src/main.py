@@ -532,17 +532,19 @@ class ViewerApp(QtWidgets.QMainWindow):
         # slice2d = axial_slab_average(self.volume.copy(), self.pos[2])
         slice2d = np.fliplr(slice2d.T)  # transpose for correct orientation
         if self.contrast_checkbox.isChecked() and self.filter_checkbox.isChecked():
+            roi_mask = self.second_roi_mask[:, :, self.pos[2]]
+            roi_mask = np.fliplr(roi_mask.T)
             denoise_value = self.denoise_slider.value() / 100
-            slice2d = enhance.roi_denoise(slice2d, np.fliplr(self.second_roi_mask[:, :, self.pos[2]]).T, sigma=denoise_value)
+            slice2d = enhance.roi_denoise(slice2d, roi_mask, sigma=denoise_value)
             if self.current_modality == "T1":
                 contrast_value = self.contrast_slider.value()
-                slice2d = enhance.roi_window_tighten(slice2d, np.fliplr(self.second_roi_mask[:, :, self.pos[2]]).T, low_pct=contrast_value, high_pct=100 - contrast_value)
-                # slice2d = enhance.roi_clahe(slice2d, np.fliplr(self.second_roi_mask[:, :, self.pos[2]]).T, kernel_size=16, clip_limit=0.01, blend=0.3)
-                # slice2d = enhance.roi_dog_enhance(slice2d, np.fliplr(self.second_roi_mask[:, :, self.pos[2]]).T, sigma_low=0.6, sigma_high=1.2, amount=0.25)
+                slice2d = enhance.roi_window_tighten(slice2d, roi_mask, low_pct=contrast_value, high_pct=100 - contrast_value)
+                # slice2d = enhance.roi_clahe(slice2d, roi_mask, kernel_size=16, clip_limit=0.01, blend=0.3)
+                # slice2d = enhance.roi_dog_enhance(slice2d, roi_mask, sigma_low=0.6, sigma_high=1.2, amount=0.25)
             else:
                 contrast_value = self.contrast_slider.value() / 1000
-                slice2d = enhance.roi_clahe(slice2d, np.fliplr(self.second_roi_mask[:, :, self.pos[2]]).T, kernel_size=24, clip_limit=contrast_value, blend=0.5)
-                slice2d = enhance.roi_window_tighten(slice2d, np.fliplr(self.second_roi_mask[:, :, self.pos[2]]).T, low_pct=1, high_pct=99)
+                slice2d = enhance.roi_clahe(slice2d, roi_mask, kernel_size=24, clip_limit=contrast_value, blend=0.5)
+                slice2d = enhance.roi_window_tighten(slice2d, roi_mask, low_pct=1, high_pct=99)
             print(denoise_value, contrast_value)
 
         if self.seg_rgba is not None and self.seg_checkbox.isChecked():
@@ -554,6 +556,21 @@ class ViewerApp(QtWidgets.QMainWindow):
     def _get_coronal(self) -> Tuple[np.ndarray, np.ndarray]:
         slice2d = self.volume[:, self.pos[1], :, :] if self.is_rgb else self.volume[:, self.pos[1], :]
         slice2d = np.fliplr(slice2d.T)  # transpose for correct orientation
+        if self.contrast_checkbox.isChecked() and self.filter_checkbox.isChecked():
+            roi_mask = self.second_roi_mask[:, self.pos[1], :]
+            roi_mask = np.fliplr(roi_mask.T)
+            denoise_value = self.denoise_slider.value() / 100
+            slice2d = enhance.roi_denoise(slice2d, roi_mask, sigma=denoise_value)
+            if self.current_modality == "T1":
+                contrast_value = self.contrast_slider.value()
+                slice2d = enhance.roi_window_tighten(slice2d, roi_mask, low_pct=contrast_value, high_pct=100 - contrast_value)
+                # slice2d = enhance.roi_clahe(slice2d, roi_mask, kernel_size=16, clip_limit=0.01, blend=0.3)
+                # slice2d = enhance.roi_dog_enhance(slice2d, roi_mask, sigma_low=0.6, sigma_high=1.2, amount=0.25)
+            else:
+                contrast_value = self.contrast_slider.value() / 1000
+                slice2d = enhance.roi_clahe(slice2d, roi_mask, kernel_size=24, clip_limit=contrast_value, blend=0.5)
+                slice2d = enhance.roi_window_tighten(slice2d, roi_mask, low_pct=1, high_pct=99)
+
         if self.seg_rgba is not None and self.seg_checkbox.isChecked():
             seg_slice2d = self._make_seg_overlay(self.seg_rgba[:, self.pos[1], :])
         else:
@@ -563,6 +580,21 @@ class ViewerApp(QtWidgets.QMainWindow):
     def _get_sagittal(self) -> Tuple[np.ndarray, np.ndarray]:
         slice2d = self.volume[self.pos[0], :, :, :] if self.is_rgb else self.volume[self.pos[0], :, :]
         slice2d = np.fliplr(slice2d.T)  # transpose for correct orientation
+        if self.contrast_checkbox.isChecked() and self.filter_checkbox.isChecked():
+            roi_mask = self.second_roi_mask[self.pos[0], :, :]
+            roi_mask = np.fliplr(roi_mask.T)
+            denoise_value = self.denoise_slider.value() / 100
+            slice2d = enhance.roi_denoise(slice2d, roi_mask, sigma=denoise_value)
+            if self.current_modality == "T1":
+                contrast_value = self.contrast_slider.value()
+                slice2d = enhance.roi_window_tighten(slice2d, roi_mask, low_pct=contrast_value, high_pct=100 - contrast_value)
+                # slice2d = enhance.roi_clahe(slice2d, roi_mask, kernel_size=16, clip_limit=0.01, blend=0.3)
+                # slice2d = enhance.roi_dog_enhance(slice2d, roi_mask, sigma_low=0.6, sigma_high=1.2, amount=0.25)
+            else:
+                contrast_value = self.contrast_slider.value() / 1000
+                slice2d = enhance.roi_clahe(slice2d, roi_mask, kernel_size=24, clip_limit=contrast_value, blend=0.5)
+                slice2d = enhance.roi_window_tighten(slice2d, roi_mask, low_pct=1, high_pct=99)
+
         if self.seg_rgba is not None and self.seg_checkbox.isChecked():
             seg_slice2d = self._make_seg_overlay(self.seg_rgba[self.pos[0], :, :])
         else:
@@ -1051,21 +1083,9 @@ class ViewerApp(QtWidgets.QMainWindow):
 
         patient_id = os.path.basename(path).split("_")[1]
         masks_path = os.path.join(os.path.dirname(path), "masks")
-        self.brainmask = load_volume(os.path.join(masks_path, f"brain_mask_of_subject_{patient_id}.nii.gz"))[0].astype(float)
-        self.second_roi_mask = load_volume(os.path.join(masks_path, f"second_subcortical_mask_of_subject_{patient_id}.nii.gz"))[0].astype(float)
-        self.third_roi_mask = load_volume(os.path.join(masks_path, f"third_subcortical_mask_of_subject_{patient_id}.nii.gz"))[0].astype(float)
-        # fgatir = load_volume(os.path.join(masks_path, f"fgatir_of_subject_{patient_id}.nii.gz"))[0].astype(float)
-        # self.fgatir_volume = self._apply_volume_normalization(fgatir)
-        # self.pca_volume = load_volume(os.path.join(masks_path, f"pca_of_subject_{patient_id}.nii.gz"))[0].astype(float)
-        # self.pca_volume = self._apply_volume_normalization(self.pca_volume)
-        # self.fa_volume = load_volume(os.path.join(masks_path, f"fa_of_subject_{patient_id}.nii.gz"))[0].astype(float)
-        # self.fa_volume = self._apply_volume_normalization(self.fa_volume)
-        # print("brain mask shape:", self.brainmask.shape)
-        # print("second roi mask shape:", self.second_roi_mask.shape)
-        # print("third roi mask shape:", self.third_roi_mask.shape)
-        # print("fgatir shape:", self.fgatir_volume.shape)
-        # print("pca shape:", self.pca_volume.shape)
-        # print("fa shape:", self.fa_volume.shape)
+        self.brainmask = load_volume(os.path.join(masks_path, f"brain_mask_of_subject_{patient_id}.nii.gz"))[0].astype(int)
+        self.second_roi_mask = load_volume(os.path.join(masks_path, f"second_subcortical_mask_of_subject_{patient_id}.nii.gz"))[0].astype(int)
+        # self.third_roi_mask = load_volume(os.path.join(masks_path, f"third_subcortical_mask_of_subject_{patient_id}.nii.gz"))[0].astype(int)
         self.filter_checkbox.setChecked(True)
         self.volume = self._apply_volume_normalization(self.t1_volume, self.brainmask)
         # self.axial_volume = precompute_slab_volume(self.volume, axis=2, radius=1, sigma=0.8)
@@ -1250,7 +1270,7 @@ class ViewerApp(QtWidgets.QMainWindow):
         self.t2_radio.setEnabled(True)
         self.brainmask = load_volume("./test_nifti_files/001/masks/brain_mask_of_subject_001.nii.gz")[0].astype(int)
         self.second_roi_mask = load_volume("./test_nifti_files/001/masks/second_subcortical_mask_of_subject_001.nii.gz")[0].astype(int)
-        self.third_roi_mask = load_volume("./test_nifti_files/001/masks/third_subcortical_mask_of_subject_001.nii.gz")[0].astype(int)
+        # self.third_roi_mask = load_volume("./test_nifti_files/001/masks/third_subcortical_mask_of_subject_001.nii.gz")[0].astype(int)
         self.filter_checkbox.setChecked(True)
         self.volume = self._apply_volume_normalization(self.t1_volume, self.brainmask)
         # self.axial_volume = precompute_slab_volume(self.volume, axis=2, radius=1, sigma=0.8)
