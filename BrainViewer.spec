@@ -8,7 +8,7 @@ project_root = Path.cwd()
 src_dir = project_root / "src"
 
 # collect any dynamic imports in your code (if needed)
-# hiddenimports = collect_submodules('numpy', 'scipy', 'nibabel', 'PyQt5', 'matplotlib')  # example; remove if not needed
+# hiddenimports = collect_submodules('numpy', 'scipy', 'nibabel', 'PyQt5', 'matplotlib', 'scikit-image')  # example; remove if not needed
 hiddenimports = []
 hiddenimports += collect_submodules('numpy')
 hiddenimports += collect_submodules('scipy')
