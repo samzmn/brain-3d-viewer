@@ -169,19 +169,19 @@ def roi_window_tighten(
     """
     roi_mask = roi_mask.astype(bool)
     vals = img[roi_mask]
-    print(img.shape, np.min(img), np.max(img), img.dtype)
-    print(roi_mask.shape, np.min(roi_mask), np.max(roi_mask), roi_mask.dtype)
-    print(vals.shape, np.min(vals), np.max(vals), vals.dtype)
+    # print(img.shape, np.min(img), np.max(img), img.dtype)
+    # print(roi_mask.shape, np.min(roi_mask), np.max(roi_mask), roi_mask.dtype)
+    # print(vals.shape, np.min(vals), np.max(vals), vals.dtype)
     lo = np.percentile(vals, low_pct)
     hi = np.percentile(vals, high_pct)
-    print("lo, hi: ", lo, hi)
+    # print("lo, hi: ", lo, hi)
     out = img.copy()
     out[roi_mask] = np.clip(
         (img[roi_mask] - lo) / (hi - lo + 1e-8),
         0.0,
         1.0
     )
-    print(out.shape, np.min(out), np.max(out), out.dtype)
+    # print(out.shape, np.min(out), np.max(out), out.dtype)
     return out
 
 def roi_unsharp(img, roi_mask, sigma=1.0, amount=0.6):

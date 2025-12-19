@@ -59,8 +59,15 @@ class LabelPanel(QtWidgets.QWidget):
         
 class SliceCanvas(FigureCanvas):
     """A matplotlib canvas showing a single 2D slice with a red crosshair."""
-    def __init__(self, parent=None, title="", figsize=(16,16)):
-        self.fig = Figure(figsize=figsize, dpi=100)
+    def __init__(self, parent=None, title=""):
+        self.fig = Figure(figsize=(16, 16), dpi=100)
+        # dpi = 100
+        # figsize = self._compute_figsize(
+        #     shape=(512, 512),  # placeholder, updated later
+        #     scale=1.0,
+        #     dpi=dpi
+        # )
+        # self.fig = Figure(figsize=figsize, dpi=dpi)
         self.fig.tight_layout()
         super().__init__(self.fig)
         self.setParent(parent)
@@ -155,6 +162,11 @@ class SliceCanvas(FigureCanvas):
         self.draw_idle()
 
     def set_crosshair(self, x, y):
+        # x0, x1 = self.ax.get_xlim()
+        # y0, y1 = self.ax.get_ylim()
+
+        # x = np.clip(x, x0, x1)
+        # y = np.clip(y, y0, y1)
         # x,y are in pixel coordinates (cols, rows)
         if self.vline is None:
             self.vline = self.ax.axvline(x, color='r')
@@ -181,7 +193,7 @@ class SliceCanvas(FigureCanvas):
             return
         self.pressed = True
         if self.on_drag and not self.zoom_enabled:
-            self.on_drag(event.xdata, event.ydata, event)
+            self.on_drag(event.xdata, event.ydata)
         self.parent().parent().canvas_clicked(self)  # notify main app
         self.prev_drag = (event.xdata, event.ydata)  # for panning
 
@@ -200,7 +212,7 @@ class SliceCanvas(FigureCanvas):
                 return
 
             self.brush_cursor.center = (event.xdata, event.ydata)
-            self.brush_cursor.radius = app.brush_radius - 0.5
+            self.brush_cursor.radius = (app.brush_radius - 0.5) * app.upsample_factor
             self.brush_cursor.set_visible(True)
             self.draw_idle()
 
@@ -212,7 +224,7 @@ class SliceCanvas(FigureCanvas):
                 app._apply_brush(self, event)
             else:
                 if self.on_drag:
-                    self.on_drag(event.xdata, event.ydata, event)
+                    self.on_drag(event.xdata, event.ydata)
 
     def _on_release(self, event: MouseEvent):
         self.pressed = False
@@ -227,7 +239,7 @@ class SliceCanvas(FigureCanvas):
             self._on_zoom(step, event)
         else:
             if self.on_scroll is not None:
-                self.on_scroll(step, event) # normal callback to viewer
+                self.on_scroll(step) # normal callback to viewer
 
     def _on_pan(self, event: MouseEvent):
         if self.prev_drag is None or event.xdata is None or event.ydata is None:
@@ -313,6 +325,30 @@ class SliceCanvas(FigureCanvas):
             self.brush_cursor.set_edgecolor((r, g, b, 0.8))
             self.draw_idle()
 
+    # def _compute_figsize(self, shape, scale, dpi, max_inches=32):
+    #     H, W = shape
+    #     H *= scale
+    #     W *= scale
+
+    #     fig_w = W / dpi
+    #     fig_h = H / dpi
+
+    #     # constrain to reasonable screen size
+    #     scale_down = max(fig_w / max_inches, fig_h / max_inches, 1.0)
+
+    #     return fig_w / scale_down, fig_h / scale_down
+
+    # def update_figure_size(self, slice_shape, upsample_factor):
+    #     dpi = self.fig.get_dpi()
+
+    #     fig_w, fig_h = self._compute_figsize(
+    #         slice_shape,
+    #         upsample_factor,
+    #         dpi
+    #     )
+
+    #     self.fig.set_size_inches(fig_w, fig_h, forward=True)
+    #     self.draw_idle()
 
 class ViewerApp(QtWidgets.QMainWindow):
     def __init__(self):
@@ -341,6 +377,9 @@ class ViewerApp(QtWidgets.QMainWindow):
         self.brush_color = (1.0, 0.0, 0.0, 0.25)  # default RGBA
         self.brush_radius = 1
         self.brush_mode = "paint"  # or "erase"
+
+        self.upsample_enabled = True
+        self.upsample_factor = 2.
 
         self._init_toolbar()
         self._init_layout()
@@ -464,6 +503,25 @@ class ViewerApp(QtWidgets.QMainWindow):
         self.denoise_slider.valueChanged.connect(lambda value: self.denoise_slide_label.setText(f"Denoise: {value/100:.1f}  "))
         toolbar2.addWidget(self.denoise_slide_label)
         toolbar2.addWidget(self.denoise_slider)
+
+        toolbar2.addSeparator()
+
+        self.upsample_checkbox = QtWidgets.QCheckBox("High Resolution: ")
+        self.upsample_checkbox.setChecked(True)
+        self.upsample_checkbox.stateChanged.connect(self._toggle_upsample_checkbox)
+        toolbar2.addWidget(self.upsample_checkbox)
+
+        self.upsample_slider = QtWidgets.QSlider(QtCore.Qt.Horizontal)
+        self.upsample_slider.setMinimum(2)
+        self.upsample_slider.setMaximum(4)
+        self.upsample_slider.setValue(2)
+        self.upsample_slider.setSingleStep(1)
+        self.upsample_slider.setMaximumWidth(200)
+        self.upsample_slider.valueChanged.connect(self._upsample_slider_change)
+        self.upsample_slider_label = QtWidgets.QLabel(f" X {self.upsample_factor}  ")
+        self.upsample_slider.valueChanged.connect(lambda value: self.upsample_slider_label.setText(f" X {self.upsample_factor}  "))
+        toolbar2.addWidget(self.upsample_slider_label)
+        toolbar2.addWidget(self.upsample_slider)        
 
         # Third toolbar ----------------------------
         toolbar3 = QtWidgets.QToolBar("Brush Tools", self)
@@ -594,8 +652,8 @@ class ViewerApp(QtWidgets.QMainWindow):
 
     def _get_normal_axial(self) -> Tuple[np.ndarray, np.ndarray]:
         if self.axial_canvas_2.ax is not None:
-            self.axial_canvas_2.ax.set_xlim(50, self.volume.shape[0] - 50)
-            self.axial_canvas_2.ax.set_ylim(50, self.volume.shape[1] - 50)
+            self.axial_canvas_2.ax.set_xlim((1 / self.upsample_factor) * np.array(self.axial_canvas.ax.get_xlim(), dtype=np.float64))
+            self.axial_canvas_2.ax.set_ylim((1 / self.upsample_factor) * np.array(self.axial_canvas.ax.get_ylim(), dtype=np.float64))
         slice2d = self.volume[:, :, self.pos[2]]
         slice2d = np.fliplr(slice2d.T)
         return slice2d, None
@@ -604,9 +662,14 @@ class ViewerApp(QtWidgets.QMainWindow):
         slice2d = self.volume[:, :, self.pos[2], :] if self.is_rgb else self.volume[:, :, self.pos[2]]
         # slice2d = axial_slab_average(self.volume.copy(), self.pos[2])
         slice2d = np.fliplr(slice2d.T)  # transpose for correct orientation
+        if self.upsample_enabled:
+            slice2d = upsample_slice(slice2d, self.upsample_factor, order=1)
+
         if self.contrast_checkbox.isChecked() and self.filter_checkbox.isChecked():
             roi_mask = self.second_roi_mask[:, :, self.pos[2]]
             roi_mask = np.fliplr(roi_mask.T)
+            if self.upsample_enabled:
+                roi_mask = upsample_slice(roi_mask, self.upsample_factor, order=0)
             denoise_value = self.denoise_slider.value() / 100
             slice2d = enhance.roi_denoise(slice2d, roi_mask, sigma=denoise_value)
             if self.current_modality == "T1":
@@ -618,10 +681,14 @@ class ViewerApp(QtWidgets.QMainWindow):
                 contrast_value = self.contrast_slider.value() / 1000
                 slice2d = enhance.roi_clahe(slice2d, roi_mask, kernel_size=24, clip_limit=contrast_value, blend=0.5)
                 slice2d = enhance.roi_window_tighten(slice2d, roi_mask, low_pct=1, high_pct=99)
-            print(denoise_value, contrast_value)
 
         if self.seg_rgba is not None and self.seg_checkbox.isChecked():
             seg_slice2d = self._make_seg_overlay(self.seg_rgba[:, :, self.pos[2]])
+            if self.upsample_enabled:
+                seg_slice2d = upsample_slice(seg_slice2d, (self.upsample_factor,
+                                            self.upsample_factor,
+                                            1),
+                                order=0)
         else:
             seg_slice2d = None
         return slice2d, seg_slice2d
@@ -629,9 +696,14 @@ class ViewerApp(QtWidgets.QMainWindow):
     def _get_coronal(self) -> Tuple[np.ndarray, np.ndarray]:
         slice2d = self.volume[:, self.pos[1], :, :] if self.is_rgb else self.volume[:, self.pos[1], :]
         slice2d = np.fliplr(slice2d.T)  # transpose for correct orientation
+        if self.upsample_enabled:
+            slice2d = upsample_slice(slice2d, self.upsample_factor, order=1)
+
         if self.contrast_checkbox.isChecked() and self.filter_checkbox.isChecked():
             roi_mask = self.second_roi_mask[:, self.pos[1], :]
             roi_mask = np.fliplr(roi_mask.T)
+            if self.upsample_enabled:
+                roi_mask = upsample_slice(roi_mask, self.upsample_factor, order=0)
             denoise_value = self.denoise_slider.value() / 100
             slice2d = enhance.roi_denoise(slice2d, roi_mask, sigma=denoise_value)
             if self.current_modality == "T1":
@@ -646,6 +718,11 @@ class ViewerApp(QtWidgets.QMainWindow):
 
         if self.seg_rgba is not None and self.seg_checkbox.isChecked():
             seg_slice2d = self._make_seg_overlay(self.seg_rgba[:, self.pos[1], :])
+            if self.upsample_enabled:
+                seg_slice2d = upsample_slice(seg_slice2d, (self.upsample_factor,
+                                            self.upsample_factor,
+                                            1),
+                                order=0)
         else:
             seg_slice2d = None
         return slice2d, seg_slice2d
@@ -653,9 +730,14 @@ class ViewerApp(QtWidgets.QMainWindow):
     def _get_sagittal(self) -> Tuple[np.ndarray, np.ndarray]:
         slice2d = self.volume[self.pos[0], :, :, :] if self.is_rgb else self.volume[self.pos[0], :, :]
         slice2d = np.fliplr(slice2d.T)  # transpose for correct orientation
+        if self.upsample_enabled:
+            slice2d = upsample_slice(slice2d, self.upsample_factor, order=1)
+
         if self.contrast_checkbox.isChecked() and self.filter_checkbox.isChecked():
             roi_mask = self.second_roi_mask[self.pos[0], :, :]
             roi_mask = np.fliplr(roi_mask.T)
+            if self.upsample_enabled:
+                roi_mask = upsample_slice(roi_mask, self.upsample_factor, order=0)
             denoise_value = self.denoise_slider.value() / 100
             slice2d = enhance.roi_denoise(slice2d, roi_mask, sigma=denoise_value)
             if self.current_modality == "T1":
@@ -670,9 +752,17 @@ class ViewerApp(QtWidgets.QMainWindow):
 
         if self.seg_rgba is not None and self.seg_checkbox.isChecked():
             seg_slice2d = self._make_seg_overlay(self.seg_rgba[self.pos[0], :, :])
+            if self.upsample_enabled:
+                seg_slice2d = upsample_slice(seg_slice2d, (self.upsample_factor,
+                                            self.upsample_factor,
+                                            1),
+                                order=0)
         else:
             seg_slice2d = None
         return slice2d, seg_slice2d
+
+    def _voxel_to_display(self, v):
+        return (v + 0.5) * self.upsample_factor
 
     def _update_all(self):
         # update 2D images
@@ -682,9 +772,20 @@ class ViewerApp(QtWidgets.QMainWindow):
         # self.axial_canvas_2.show_slice(*self._get_normal_axial())
 
         # update crosshairs: compute pixel coords for each canvas
-        self.axial_canvas.set_crosshair(self.shape[0] - self.pos[0], self.pos[1])
-        self.coronal_canvas.set_crosshair(self.shape[0] - self.pos[0], self.pos[2])
-        self.sagittal_canvas.set_crosshair(self.shape[1] - self.pos[1], self.pos[2])
+        self.axial_canvas.set_crosshair(
+            self._voxel_to_display(self.shape[0] - 1 - self.pos[0]),
+            self._voxel_to_display(self.pos[1])
+        )
+
+        self.coronal_canvas.set_crosshair(
+            self._voxel_to_display(self.shape[0] - 1 - self.pos[0]),
+            self._voxel_to_display(self.pos[2])
+        )
+
+        self.sagittal_canvas.set_crosshair(
+            self._voxel_to_display(self.shape[1] - 1 - self.pos[1]),
+            self._voxel_to_display(self.pos[2])
+        )
 
         # update 3D marker
         self._update_status()
@@ -702,6 +803,10 @@ class ViewerApp(QtWidgets.QMainWindow):
         self.coronal_slider.blockSignals(False)
         self.sagittal_slider.blockSignals(False)
 
+        self.axial_label.setText(str(self.pos[2] + 1))
+        self.coronal_label.setText(str(self.pos[1] + 1))
+        self.sagittal_label.setText(str(self.pos[0] + 1))
+
     # ---------------- Canvas click handling ----------------
     def canvas_clicked(self, canvas):
         for c in [self.axial_canvas, self.sagittal_canvas, self.coronal_canvas]:
@@ -710,59 +815,59 @@ class ViewerApp(QtWidgets.QMainWindow):
         self.focused_canvas = canvas
 
     # ---------------- Drag callbacks ----------------
-    def _on_axial_drag(self, xpix, ypix, event):
+    def _on_axial_drag(self, xpix: float, ypix: float):
         if xpix is None or ypix is None:
             return
-        self.pos[0] = np.clip(int(self.shape[0] - round(xpix)), 0, self.shape[0]-1)
-        self.pos[1] = np.clip(int(round(ypix)), 0, self.shape[1]-1)
+        x = int(xpix / self.upsample_factor)
+        y = int(ypix / self.upsample_factor)
+        self.pos[0] = np.clip(self.shape[0] - 1 - x, 0, self.shape[0] - 1)
+        self.pos[1] = np.clip(y, 0, self.shape[1] - 1)
         self._update_all()
 
-    def _on_coronal_drag(self, xpix, ypix, event):
+    def _on_coronal_drag(self, xpix: float, ypix: float):
         if xpix is None or ypix is None:
             return
-        self.pos[0] = np.clip(int(self.shape[0] - round(xpix)), 0, self.shape[0]-1)
-        self.pos[2] = np.clip(int(round(ypix)), 0, self.shape[2]-1)
+        x = int(xpix / self.upsample_factor)
+        y = int(ypix / self.upsample_factor)
+        self.pos[0] = np.clip(self.shape[0] - 1 - x, 0, self.shape[0] - 1)
+        self.pos[2] = np.clip(y, 0, self.shape[2] - 1)
         self._update_all()
 
-    def _on_sagittal_drag(self, xpix, ypix, event):
+    def _on_sagittal_drag(self, xpix: float, ypix: float):
         if xpix is None or ypix is None:
             return
-        self.pos[1] = np.clip(int(self.shape[1] - round(xpix)), 0, self.shape[1]-1)
-        self.pos[2] = np.clip(int(round(ypix)), 0, self.shape[2]-1)
+        x = int(xpix / self.upsample_factor)
+        y = int(ypix / self.upsample_factor)
+        self.pos[1] = np.clip(self.shape[1] - 1 - x, 0, self.shape[1] - 1)
+        self.pos[2] = np.clip(y, 0, self.shape[2] - 1)
         self._update_all()
 
     # ---------------- Scroll callbacks ----------------
-    def _on_axial_scroll(self, step, event):
+    def _on_axial_scroll(self, step):
         # axial = Z axis slice
         self.pos[2] = np.clip(self.pos[2] + step, 0, self.shape[2]-1)
-        self.axial_label.setText(str(self.pos[2] + 1))
         self._update_all()
 
-    def _on_coronal_scroll(self, step, event):
+    def _on_coronal_scroll(self, step):
         # coronal = Y axis slice
         self.pos[1] = np.clip(self.pos[1] + step, 0, self.shape[1]-1)
-        self.coronal_label.setText(str(self.pos[1] + 1))
         self._update_all()
 
-    def _on_sagittal_scroll(self, step, event):
+    def _on_sagittal_scroll(self, step):
         # sagittal = X axis slice
         self.pos[0] = np.clip(self.pos[0] + step, 0, self.shape[0]-1)
-        self.sagittal_label.setText(str(self.pos[0] + 1))
         self._update_all()
 
     # ---------------- Slider callbacks ----------------
     def _slider_axial(self, value):
-        self.axial_label.setText(str(value + 1))
         self.pos[2] = value
         self._update_all()
 
     def _slider_coronal(self, value):
-        self.coronal_label.setText(str(value + 1))
         self.pos[1] = value
         self._update_all()
 
     def _slider_sagittal(self, value):
-        self.sagittal_label.setText(str(value + 1))
         self.pos[0] = value
         self._update_all()
 
@@ -1130,8 +1235,8 @@ class ViewerApp(QtWidgets.QMainWindow):
         if self.active_label is None:
             return
         
-        cx = int(round(event.xdata))
-        cy = int(round(event.ydata))
+        cx = int(round(event.xdata / self.upsample_factor))
+        cy = int(round(event.ydata / self.upsample_factor))
         cx += 1 # because of a half-pixel coordinate mismatch between matplotlib and the data
 
         self._paint_circle(canvas, cx, cy)
@@ -1187,7 +1292,6 @@ class ViewerApp(QtWidgets.QMainWindow):
         else:
             self.seg_rgba[i, j, k] = (0., 0., 0., 0.)
 
-
     # ---------- Selecting Main Volume showed (T1 or T2) -----------------
     def _change_modality(self):
         if self.t1_radio.isChecked():
@@ -1228,6 +1332,38 @@ class ViewerApp(QtWidgets.QMainWindow):
             brainmask = np.ones_like(volume, dtype=bool)
         lo, hi = enhance.compute_volume_normalization(volume, brainmask, pmin, pmax)
         return enhance.apply_volume_normalization(volume, lo, hi)
+
+    def _toggle_upsample_checkbox(self, state):
+        enabled = (state == QtCore.Qt.Checked)
+        self.upsample_checkbox = enabled
+        if enabled:
+            self.upsample_factor = 2.
+            self.upsample_slider.setValue(self.upsample_factor)
+            self.upsample_slider.setEnabled(True)
+            self.upsample_slider_label.setText(f" X {self.upsample_factor}  ")
+        else:
+            self.upsample_factor = 1.
+            self.upsample_slider.setValue(self.upsample_factor)
+            self.upsample_slider.setEnabled(False)
+            self.upsample_slider_label.setText(f" X {self.upsample_factor}  ")
+
+        # self._update_canvases_figures()
+        self._update_all()
+
+    def _upsample_slider_change(self, value):
+        self.upsample_factor = float(value)
+        # self._update_canvases_figures()
+        self._update_all()
+
+    # def _update_canvases_figures(self):
+    #     if self.volume is None:
+    #         return
+    #     axial_slice_shape = (self.shape[1], self.shape[0])
+    #     coronal_slice_shape = (self.shape[2], self.shape[0])
+    #     sagittal_slice_shape = (self.shape[2], self.shape[1])
+    #     self.axial_canvas.update_figure_size(axial_slice_shape, self.upsample_factor)
+    #     self.coronal_canvas.update_figure_size(coronal_slice_shape, self.upsample_factor)
+    #     self.sagittal_canvas.update_figure_size(sagittal_slice_shape, self.upsample_factor)
 
     # ---------------- Load volume ----------------
     def _load_t1_volume(self):
@@ -1292,6 +1428,8 @@ class ViewerApp(QtWidgets.QMainWindow):
         self.coronal_canvas.aspect = sz / sx
         self.sagittal_canvas.aspect = sz / sy
         self.axial_canvas_2.aspect = sy / sx
+
+        # self._update_canvases_figures()
 
         # update slider ranges
         self.axial_slider.setRange(0, self.shape[2] - 1)

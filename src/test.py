@@ -5,12 +5,12 @@ import nibabel as nib
 from PyQt5 import QtWidgets
 from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
 from matplotlib.figure import Figure
-import pyvista as pv
-from pyvistaqt import QtInteractor
+# import pyvista as pv
+# from pyvistaqt import QtInteractor
 from PyQt5 import QtCore
-import vtk
+# import vtk
 
-pv.set_plot_theme("document")  # optional nicer defaults
+# pv.set_plot_theme("document")  # optional nicer defaults
 
 
 class SliceCanvas(FigureCanvas):
@@ -138,7 +138,7 @@ class ViewerApp(QtWidgets.QMainWindow):
         self.sagittal_canvas.on_scroll = self._on_sagittal_scroll
 
         # PyVista 3D widget
-        self.pv_widget = QtInteractor(self)
+        # self.pv_widget = QtInteractor(self)
 
         # Opacity slider for 3D volume
         self.opacity_slider = QtWidgets.QSlider(QtCore.Qt.Horizontal)
@@ -150,7 +150,7 @@ class ViewerApp(QtWidgets.QMainWindow):
         grid.addWidget(self.axial_canvas, 0, 0)
         grid.addWidget(self.coronal_canvas, 0, 1)
         grid.addWidget(self.sagittal_canvas, 1, 0)
-        grid.addWidget(self.pv_widget.interactor, 1, 1)
+        # grid.addWidget(self.pv_widget.interactor, 1, 1)
         grid.addWidget(self.opacity_slider, 2, 1)  # slider under the 3D view
 
         # allow the 3D view to expand more

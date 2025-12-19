@@ -40,7 +40,7 @@ def label_structure(prob_map: np.ndarray, index: int, threshold:float=0.3) -> np
 
 def upsample_slice(slice2d, scale=2.0, order=1):
     """
-    scale: 2.0 → 2× resolution in each dimension
+    scale: 2.0 → 2x resolution in each dimension
     order: interpolation order
            0 = nearest
            1 = bilinear (recommended)
