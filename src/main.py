@@ -383,7 +383,7 @@ class ViewerApp(QtWidgets.QMainWindow):
 
         self._init_toolbar()
         self._init_layout()
-        self._test_init() # initialize images
+        # self._test_init() # initialize images
 
     def _init_toolbar(self):
         # ----------------------- TOP TOOL BAR -----------------------
@@ -993,19 +993,21 @@ class ViewerApp(QtWidgets.QMainWindow):
 
     # ---------------- Key press handling ----------------
     def eventFilter(self, obj, event):
-        # Detect key release → disable zoom
-        if event.type() == QtCore.QEvent.KeyRelease:
-            # When Ctrl is released → disable zoom
-            if not (event.modifiers() & QtCore.Qt.ControlModifier):
-                self._toggle_zoom_mode(False)
-                
+        # ---------------- Key press ----------------
         if event.type() == QtCore.QEvent.KeyPress:
-            # --- CTRL-drag zoom activation ---
-            if event.modifiers() & QtCore.Qt.ControlModifier:
+            modifiers = event.modifiers()
+            # CTRL → zoom mode
+            if modifiers & QtCore.Qt.ControlModifier:
                 self._toggle_zoom_mode(True)
             else:
                 self._toggle_zoom_mode(False)
-            
+
+            # SHIFT → brush mode (momentary)
+            if modifiers & QtCore.Qt.ShiftModifier:
+                self._toggle_brush_mode(True)
+            else:
+                self._toggle_brush_mode(False)
+
             key = event.key()
             
             keymap = {
@@ -1023,6 +1025,19 @@ class ViewerApp(QtWidgets.QMainWindow):
             if key in keymap:
                 self._on_key_press(key = keymap[key])
                 return True  # prevent any widget from getting this key
+
+        # ---------------- Key release ----------------
+        elif event.type() == QtCore.QEvent.KeyRelease:
+
+            modifiers = event.modifiers()
+
+            # CTRL released → disable zoom
+            if not (modifiers & QtCore.Qt.ControlModifier):
+                self._toggle_zoom_mode(False)
+
+            # SHIFT released → disable brush
+            if not (modifiers & QtCore.Qt.ShiftModifier):
+                self._toggle_brush_mode(False)
 
         return super().eventFilter(obj, event)
     
@@ -1220,6 +1235,10 @@ class ViewerApp(QtWidgets.QMainWindow):
             rotated = rotate(self.seg_rgba, angle_deg, axes=(0,1), reshape=False, order=0, mode='constant', cval=0,)
 
     # ---------------- Brush Toolbar callbacks ---------------
+    def _toggle_brush_mode(self, enabled):
+        self.brush_enabled = enabled
+        self.brush_checkbox.setChecked(enabled)
+
     def _toggle_brush(self, checked):
         self.brush_enabled = checked
 
