@@ -1338,12 +1338,12 @@ class ViewerApp(QtWidgets.QMainWindow):
         self.upsample_checkbox = enabled
         if enabled:
             self.upsample_factor = 2.
-            self.upsample_slider.setValue(self.upsample_factor)
+            self.upsample_slider.setValue(int(self.upsample_factor))
             self.upsample_slider.setEnabled(True)
             self.upsample_slider_label.setText(f" X {self.upsample_factor}  ")
         else:
             self.upsample_factor = 1.
-            self.upsample_slider.setValue(self.upsample_factor)
+            self.upsample_slider.setValue(int(self.upsample_factor))
             self.upsample_slider.setEnabled(False)
             self.upsample_slider_label.setText(f" X {self.upsample_factor}  ")
 
