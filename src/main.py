@@ -1,45 +1,20 @@
-"""
-Interactive 3D + orthogonal 2D viewer (PyQt5 + matplotlib + pyvista)
-Features:
-- Load NIfTI (.nii/.nii.gz) or .npy numpy arrays
-- Shows Axial, Coronal, Sagittal 2D views (matplotlib) with red crosshairs
-- Interactive: click & drag in any 2D view to move the crosshair and update all views
-- 3D rendering (pyvista) with a red sphere showing the current crosshair position
-
-Dependencies:
-- numpy
-- nibabel
-- PyQt5
-- matplotlib
-- pyvista
-- pyvistaqt
-
-Install (recommended in a venv):
-pip install numpy nibabel PyQt5 matplotlib pyvista pyvistaqt
-
-Run:
-python app.py
-
-Notes:
-- This is a single-file example intended to be a practical starting point. For very large volumes
-  you might want to use downsampling or streaming volume rendering.
-- Orientation assumptions: data is treated as (Z, Y, X) (i.e., axial is along axis 0). If your
-  NIfTI uses a different orientation you may need to reorder axes after loading.
-"""
-
 import sys
 import os
 import json
 from typing import Tuple
+
 import numpy as np
-from scipy.ndimage import center_of_mass, binary_dilation, binary_erosion, rotate
 import nibabel as nib
+from scipy.ndimage import center_of_mass, binary_dilation, binary_erosion, rotate
 from PyQt5 import QtWidgets, QtCore, QtGui
 from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
 from matplotlib.figure import Figure
+from matplotlib.backend_bases import MouseEvent
 import matplotlib.patches as patches
-from utils import load_volume, label_structure
+
+from utils import load_volume, label_structure, upsample_slice
 import enhance
+
 
 # ------------------------------------------------------------
 # LabelPanel: shows label colors + selection
@@ -63,8 +38,6 @@ class LabelPanel(QtWidgets.QWidget):
         
         self.setMaximumWidth(220)
 
-        self.selected_label = None
-
     def set_labels(self, seg_colors, seg_names=None):
         self.label_list.clear()
         for index, color in seg_colors.items():
@@ -83,12 +56,11 @@ class LabelPanel(QtWidgets.QWidget):
         label_idx = item.data(QtCore.Qt.UserRole)
         self.current_label_display.setText(f"Selected Label: {label_idx}")
         self.label_selected.emit(label_idx)
-        self.selected_label = label_idx
         
 class SliceCanvas(FigureCanvas):
     """A matplotlib canvas showing a single 2D slice with a red crosshair."""
-    def __init__(self, parent=None, title="", figsize=(32,32)):
-        self.fig = Figure(figsize=figsize)
+    def __init__(self, parent=None, title="", figsize=(16,16)):
+        self.fig = Figure(figsize=figsize, dpi=100)
         self.fig.tight_layout()
         super().__init__(self.fig)
         self.setParent(parent)
@@ -124,6 +96,17 @@ class SliceCanvas(FigureCanvas):
             visible=False
         )
         self.ax.add_patch(self.focus_rect)
+
+        self.brush_cursor = patches.Circle(
+            (0, 0),
+            radius=5,
+            facecolor=(1, 0, 0, 0.25),
+            edgecolor=(1, 0, 0, 0.6),
+            linewidth=1.5,
+            visible=False,
+            zorder=999
+        )
+        self.ax.add_patch(self.brush_cursor)
     
     def draw_focus_border(self):
         self.focus_rect.set_visible(self.is_focused)
@@ -138,7 +121,7 @@ class SliceCanvas(FigureCanvas):
             self.seg = None
         self.draw_idle()
 
-    def show_slice(self, slice2d, seg_slice2d=None):
+    def show_slice(self, slice2d, seg_slice2d=None, extend=None):
         """slice2d: HxW (grayscale) or HxWx3 (RGB)"""
         if slice2d.ndim == 3 and slice2d.shape[2] == 3:
             slice2d = slice2d.astype(float)
@@ -153,7 +136,7 @@ class SliceCanvas(FigureCanvas):
 
         if self.im is None:
             self.ax.axis('off')
-            self.im = self.ax.imshow(slice2d, cmap=cmap, aspect=self.aspect, origin='lower', interpolation='nearest')
+            self.im = self.ax.imshow(slice2d, cmap=cmap, aspect=self.aspect, origin='lower', interpolation='nearest', extent=extend)
         else:
             self.im.set_data(slice2d)
             if cmap:
@@ -161,7 +144,7 @@ class SliceCanvas(FigureCanvas):
         
         if self.seg is None:
             if seg_slice2d is not None:
-                self.seg = self.ax.imshow(seg_slice2d, aspect=self.aspect, origin='lower', interpolation='nearest')
+                self.seg = self.ax.imshow(seg_slice2d, aspect=self.aspect, origin='lower', interpolation='nearest', extent=extend)
         else:
             if seg_slice2d is not None:
                 self.seg.set_data(seg_slice2d)
@@ -193,7 +176,7 @@ class SliceCanvas(FigureCanvas):
         if self.cid_move: self.mpl_disconnect(self.cid_move)
         self.pressed = False
 
-    def _on_press(self, event):
+    def _on_press(self, event: MouseEvent):
         if event.inaxes != self.ax:
             return
         self.pressed = True
@@ -202,22 +185,43 @@ class SliceCanvas(FigureCanvas):
         self.parent().parent().canvas_clicked(self)  # notify main app
         self.prev_drag = (event.xdata, event.ydata)  # for panning
 
-    def _on_move(self, event):
-        if not self.pressed:
-            return
+    def _on_move(self, event: MouseEvent):
         if event.inaxes != self.ax:
+            self.brush_cursor.set_visible(False)
+            self.draw_idle()
             return
-        if self.zoom_enabled:
-            self._on_pan(event)
-        else:
-            if self.on_drag:
-                self.on_drag(event.xdata, event.ydata, event)
 
-    def _on_release(self, event):
+        app = self.parent().parent()
+
+        if not self.pressed:
+            if not app.brush_enabled:
+                self.brush_cursor.set_visible(False)
+                self.draw_idle()
+                return
+
+            self.brush_cursor.center = (event.xdata, event.ydata)
+            self.brush_cursor.radius = app.brush_radius - 0.5
+            self.brush_cursor.set_visible(True)
+            self.draw_idle()
+
+        else: # Mouse Drag
+            if self.zoom_enabled:
+                self._on_pan(event)
+            elif app.brush_enabled:
+                self.brush_cursor.center = (event.xdata, event.ydata)
+                app._apply_brush(self, event)
+            else:
+                if self.on_drag:
+                    self.on_drag(event.xdata, event.ydata, event)
+
+    def _on_release(self, event: MouseEvent):
         self.pressed = False
         self.prev_drag = None
+        app = self.parent().parent()
+        if app.brush_enabled and not self.zoom_enabled:
+            app._apply_brush(self, event)
 
-    def _on_scroll(self, event):
+    def _on_scroll(self, event: MouseEvent):
         step = 1 if event.button == 'up' else -1
         if self.zoom_enabled:
             self._on_zoom(step, event)
@@ -225,7 +229,7 @@ class SliceCanvas(FigureCanvas):
             if self.on_scroll is not None:
                 self.on_scroll(step, event) # normal callback to viewer
 
-    def _on_pan(self, event):
+    def _on_pan(self, event: MouseEvent):
         if self.prev_drag is None or event.xdata is None or event.ydata is None:
             return
 
@@ -263,7 +267,7 @@ class SliceCanvas(FigureCanvas):
         self.prev_drag = (event.xdata, event.ydata)
         self.draw_idle()
 
-    def _on_zoom(self, step, event):
+    def _on_zoom(self, step, event: MouseEvent):
         if event.xdata is None or event.ydata is None:
             return  # ignore zooming outside the image
 
@@ -302,6 +306,13 @@ class SliceCanvas(FigureCanvas):
 
         self.draw_idle()
 
+    def set_brush_color(self, rgba):
+        if hasattr(self, "brush_cursor"):
+            self.brush_cursor.set_facecolor(rgba)
+            r, g, b, _ = rgba
+            self.brush_cursor.set_edgecolor((r, g, b, 0.8))
+            self.draw_idle()
+
 
 class ViewerApp(QtWidgets.QMainWindow):
     def __init__(self):
@@ -314,6 +325,7 @@ class ViewerApp(QtWidgets.QMainWindow):
         self.pos = None
         self.seg_volume = None
         self.seg_rgba = None
+        self.active_label = None
         self.label_colors = {}
         self.structures = None # dict of mapping from label index to its prperty dict
         self.focused_canvas = None
@@ -324,11 +336,17 @@ class ViewerApp(QtWidgets.QMainWindow):
         self.current_modality = "T1"   # "T1" or "T2"
         self.brainmask = None
         self.second_rio_mask = None
-        # self.third_roi_mask = None
-        # self.fgatir_volume = None
-        # self.pca_volume = None
-        # self.fa_volume = None
+        
+        self.brush_enabled = False
+        self.brush_color = (1.0, 0.0, 0.0, 0.25)  # default RGBA
+        self.brush_radius = 1
+        self.brush_mode = "paint"  # or "erase"
 
+        self._init_toolbar()
+        self._init_layout()
+        self._test_init() # initialize images
+
+    def _init_toolbar(self):
         # ----------------------- TOP TOOL BAR -----------------------
         toolbar = QtWidgets.QToolBar("MainToolbar")
         self.addToolBar(QtCore.Qt.TopToolBarArea, toolbar)
@@ -337,9 +355,13 @@ class ViewerApp(QtWidgets.QMainWindow):
         load_btn.triggered.connect(self._load_t1_volume)
         toolbar.addAction(load_btn)
 
+        toolbar.addSeparator()
+
         load_t2_btn = QtWidgets.QAction("Load T2 NIfTI...", self)
         load_t2_btn.triggered.connect(self._load_t2_volume)
         toolbar.addAction(load_t2_btn)
+
+        toolbar.addSeparator()
 
         self.modality_group = QtWidgets.QButtonGroup(self)
         self.t1_radio = QtWidgets.QRadioButton("T1")
@@ -353,22 +375,32 @@ class ViewerApp(QtWidgets.QMainWindow):
         toolbar.addWidget(self.t1_radio)
         toolbar.addWidget(self.t2_radio)
 
+        toolbar.addSeparator()
+
         load_seg_btn = QtWidgets.QAction("Load Segmentation NIfTI...", self)
         load_seg_btn.triggered.connect(self._load_segmentation_nifti)
         toolbar.addAction(load_seg_btn)
+
+        toolbar.addSeparator()
 
         save_seg_btn = QtWidgets.QAction("Save Segmentation NIfTI...", self)
         save_seg_btn.triggered.connect(self._save_segmentation_nifti)
         toolbar.addAction(save_seg_btn)
 
+        toolbar.addSeparator()
+
         reload_seg_btn = QtWidgets.QAction("Reload Segmentation", self)
         reload_seg_btn.triggered.connect(self._reload_segmentation_nifti)
         toolbar.addAction(reload_seg_btn)
+
+        toolbar.addSeparator()
 
         self.seg_checkbox = QtWidgets.QCheckBox("Show Segmentation")
         self.seg_checkbox.setChecked(True)
         self.seg_checkbox.stateChanged.connect(self._toggle_seg_visibility)
         toolbar.addWidget(self.seg_checkbox)
+
+        toolbar.addSeparator()
 
         self.opacity_slider = QtWidgets.QSlider(QtCore.Qt.Horizontal)
         self.opacity_slider.setMinimum(0)
@@ -380,16 +412,20 @@ class ViewerApp(QtWidgets.QMainWindow):
         toolbar.addWidget(QtWidgets.QLabel("Opacity of Segmentation:"))
         toolbar.addWidget(self.opacity_slider)
 
+        toolbar.addSeparator()
+
         self.zoom_checkbox = QtWidgets.QCheckBox("Zoom Mode")
         self.zoom_checkbox.setChecked(False)
         self.zoom_checkbox.stateChanged.connect(self._toggle_zoom_mode_checkbox)
         toolbar.addWidget(self.zoom_checkbox)
 
+        toolbar.addSeparator()
+
         reset_btn = QtWidgets.QAction("Close all files", self)
         reset_btn.triggered.connect(self._reset_volumes)
         toolbar.addAction(reset_btn)
 
-        # Second toolbar
+        # Second toolbar ----------------------------
         self.addToolBarBreak()            # force new row
         toolbar2 = QtWidgets.QToolBar("SecondaryToolbar")
         self.addToolBar(QtCore.Qt.TopToolBarArea, toolbar2)
@@ -398,6 +434,8 @@ class ViewerApp(QtWidgets.QMainWindow):
         self.filter_checkbox.setChecked(False)
         self.filter_checkbox.stateChanged.connect(self._toggle_filter_checkbox)
         toolbar2.addWidget(self.filter_checkbox)
+
+        toolbar2.addSeparator()
 
         self.contrast_checkbox = QtWidgets.QCheckBox("Contrast: ")
         self.contrast_checkbox.setChecked(False)
@@ -414,17 +452,53 @@ class ViewerApp(QtWidgets.QMainWindow):
         toolbar2.addWidget(QtWidgets.QLabel(""))
         toolbar2.addWidget(self.contrast_slider)
 
+        toolbar2.addSeparator()
+
         self.denoise_slider = QtWidgets.QSlider(QtCore.Qt.Horizontal)
         self.denoise_slider.setMinimum(0)
         self.denoise_slider.setMaximum(100)
         self.denoise_slider.setValue(60)
         self.denoise_slider.setSingleStep(5)
-        self.denoise_slide_label = QtWidgets.QLabel("Denoise: 0.6")
+        self.denoise_slide_label = QtWidgets.QLabel("Denoise: 0.6  ")
         self.denoise_slider.valueChanged.connect(self._update_all)
-        self.denoise_slider.valueChanged.connect(lambda value: self.denoise_slide_label.setText(f"Denoise: {value/100:.1f} "))
+        self.denoise_slider.valueChanged.connect(lambda value: self.denoise_slide_label.setText(f"Denoise: {value/100:.1f}  "))
         toolbar2.addWidget(self.denoise_slide_label)
         toolbar2.addWidget(self.denoise_slider)
 
+        # Third toolbar ----------------------------
+        toolbar3 = QtWidgets.QToolBar("Brush Tools", self)
+        self.addToolBarBreak()
+        self.addToolBar(QtCore.Qt.TopToolBarArea, toolbar3)
+
+        self.brush_checkbox = QtWidgets.QCheckBox("Brush")
+        self.brush_checkbox.toggled.connect(self._toggle_brush)
+        toolbar3.addWidget(self.brush_checkbox)
+
+        toolbar3.addSeparator()
+
+        self.brush_slider = QtWidgets.QSlider(QtCore.Qt.Horizontal)
+        self.brush_slider.setMaximumWidth(200)
+        self.brush_slider.setRange(1, 10)
+        self.brush_slider.setValue(self.brush_radius)
+        self.brush_slider.valueChanged.connect(self._set_brush_radius)
+        self.brush_slider_label = QtWidgets.QLabel(f"Size: {self.brush_radius}  ")
+        self.brush_slider.valueChanged.connect(lambda value: self.brush_slider_label.setText(f"Size: {value}  "))
+        toolbar3.addWidget(self.brush_slider_label)
+        toolbar3.addWidget(self.brush_slider)
+
+        toolbar3.addSeparator()
+
+        self.brush_radio = QtWidgets.QRadioButton("Paint")
+        self.erase_radio = QtWidgets.QRadioButton("Erase")
+        self.brush_radio.setChecked(True)
+
+        self.brush_radio.toggled.connect(lambda: self._set_brush_mode("paint"))
+        self.erase_radio.toggled.connect(lambda: self._set_brush_mode("erase"))
+
+        toolbar3.addWidget(self.brush_radio)
+        toolbar3.addWidget(self.erase_radio)
+
+    def _init_layout(self):
         # ----------------------- MAIN WIDGET and layout -----------------------
         central = QtWidgets.QWidget()
         self.setCentralWidget(central)
@@ -432,6 +506,7 @@ class ViewerApp(QtWidgets.QMainWindow):
 
         # ---------------- Left panel (labels) ----------------------
         self.label_panel = LabelPanel()
+        self.label_panel.label_selected.connect(self._on_label_selected)
         layout.addWidget(self.label_panel)
 
         # ---------------- 2D views container ---------------------
@@ -491,14 +566,12 @@ class ViewerApp(QtWidgets.QMainWindow):
         self.status = self.statusBar()
         self._update_status()
 
-        # initialize images
-        # self._test_init()
-
     # ---------------- Status bar update ----------------
     def _update_status(self):
         if self.pos is not None:
             self.status.showMessage(f'pos (x,y,z): {self.pos[0]}, {self.pos[1]}, {self.pos[2]}')
 
+    # ---------------- Visual Filters Toolbar callbaccks -----------
     def _reset_default_filter_values(self):
         if self.current_modality == "T1":
             self.contrast_slider.setValue(20)
@@ -800,6 +873,19 @@ class ViewerApp(QtWidgets.QMainWindow):
         self.maximized_view = view
         self._maximize_view(view)
 
+    # --------------- Left Label Panel callbacks -------------------
+    def _on_label_selected(self, label_idx):
+        self.active_label = label_idx
+
+        if label_idx in self.label_colors:
+            r, g, b = self.label_colors[self.active_label]
+            self.active_label_color = (r, g, b, 0.25)
+        else:
+            self.active_label_color = (1.0, 0.0, 0.0, 0.25)
+
+        for canvas in (self.axial_canvas, self.coronal_canvas, self.sagittal_canvas):
+            canvas.set_brush_color(self.active_label_color)
+
     # ---------------- Key press handling ----------------
     def eventFilter(self, obj, event):
         # Detect key release → disable zoom
@@ -836,7 +922,7 @@ class ViewerApp(QtWidgets.QMainWindow):
         return super().eventFilter(obj, event)
     
     def _on_key_press(self, key):
-        if self.label_panel.selected_label is None:
+        if self.active_label is None:
             return
         if key == "+":
             self._resize_label_3d("+")
@@ -853,7 +939,7 @@ class ViewerApp(QtWidgets.QMainWindow):
         
     # ---------------- Label manipulation in 3D ----------------
     def _move_label_3d(self, arrow_key):
-        label = self.label_panel.selected_label
+        label = self.active_label
         rgba = self.seg_rgba
         H, W, D, _ = rgba.shape
         
@@ -915,7 +1001,7 @@ class ViewerApp(QtWidgets.QMainWindow):
         sign = '-' shrink based on probability threshold (preferred)
         OR fallback morphological dilation/erosion.
         """
-        label_idx = self.label_panel.selected_label
+        label_idx = self.active_label
         rgba = self.seg_rgba.copy()
         H, W, D, _ = rgba.shape
 
@@ -1027,6 +1113,80 @@ class ViewerApp(QtWidgets.QMainWindow):
             rotated = rotate(self.seg_rgba, angle_deg, axes=(0,2), reshape=False, order=0, mode='constant', cval=0,)
         else: # z
             rotated = rotate(self.seg_rgba, angle_deg, axes=(0,1), reshape=False, order=0, mode='constant', cval=0,)
+
+    # ---------------- Brush Toolbar callbacks ---------------
+    def _toggle_brush(self, checked):
+        self.brush_enabled = checked
+
+    def _set_brush_radius(self, value):
+        self.brush_radius = value
+
+    def _set_brush_mode(self, mode):
+        self.brush_mode = mode
+
+    def _apply_brush(self, canvas: SliceCanvas, event: MouseEvent):
+        if event.xdata is None or event.ydata is None:
+            return
+        if self.active_label is None:
+            return
+        
+        cx = int(round(event.xdata))
+        cy = int(round(event.ydata))
+        cx += 1 # because of a half-pixel coordinate mismatch between matplotlib and the data
+
+        self._paint_circle(canvas, cx, cy)
+        self._update_all()
+
+    def _paint_circle(self, canvas, cx, cy):
+        rr = self.brush_radius - 1
+        yy, xx = np.ogrid[-rr:rr+1, -rr:rr+1]
+        mask = xx**2 + yy**2 <= rr**2
+
+        for dy in range(-rr, rr+1):
+            for dx in range(-rr, rr+1):
+                if not mask[dy+rr, dx+rr]:
+                    continue
+
+                x2 = cx + dx
+                y2 = cy + dy
+
+                if canvas is self.axial_canvas:
+                    i = self.shape[0] - x2
+                    j = y2
+                    k = self.pos[2]
+
+                elif canvas is self.coronal_canvas:
+                    i = self.shape[0] - x2
+                    j = self.pos[1]
+                    k = y2
+
+                elif canvas is self.sagittal_canvas:
+                    i = self.pos[0]
+                    j = self.shape[1] - x2
+                    k = y2
+
+                else:
+                    continue
+
+                if not self._in_bounds(i, j, k):
+                    continue
+
+                self._write_seg_voxel(i, j, k)
+
+    def _in_bounds(self, i, j, k):
+        return (
+            0 <= i < self.shape[0] and
+            0 <= j < self.shape[1] and
+            0 <= k < self.shape[2]
+        )
+
+    def _write_seg_voxel(self, i, j, k):
+        color = np.array(self.label_colors[self.active_label] + (1.0,), dtype=np.float32)
+        if self.brush_mode == "paint":
+            self.seg_rgba[i, j, k] = color
+        else:
+            self.seg_rgba[i, j, k] = (0., 0., 0., 0.)
+
 
     # ---------- Selecting Main Volume showed (T1 or T2) -----------------
     def _change_modality(self):
