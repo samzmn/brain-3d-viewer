@@ -2,6 +2,7 @@ import sys
 import os
 import json
 from typing import Tuple
+from pathlib import Path
 
 import numpy as np
 import nibabel as nib
@@ -12,7 +13,7 @@ from matplotlib.figure import Figure
 from matplotlib.backend_bases import MouseEvent
 import matplotlib.patches as patches
 
-from utils import load_volume, label_structure, upsample_slice
+from utils import load_volume, label_structure, upsample_slice, resource_path
 import enhance
 
 
@@ -572,6 +573,9 @@ class ViewerApp(QtWidgets.QMainWindow):
         toolbar3.addWidget(self.erase_radio)
 
     def _init_layout(self):
+        icon_path = resource_path("resources/icons/app_icon.png")
+        self.setWindowIcon(QtGui.QIcon(str(icon_path)))
+
         # ----------------------- MAIN WIDGET and layout -----------------------
         central = QtWidgets.QWidget()
         self.setCentralWidget(central)

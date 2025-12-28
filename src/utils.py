@@ -1,10 +1,20 @@
-from typing import Tuple
+import sys
 import os
+from pathlib import Path
+from typing import Tuple
 import numpy as np
 import nibabel as nib
 from nibabel.orientations import aff2axcodes, io_orientation
 from scipy.ndimage import zoom
 
+
+def resource_path(relative):
+    if hasattr(sys, "_MEIPASS"):
+        # Running inside PyInstaller bundle
+        return Path(sys._MEIPASS) / relative
+    else:
+        # Running in development
+        return Path(__file__).parent / relative
 
 def load_volume(path, dtype=np.float32) -> Tuple[np.ndarray, np.ndarray]:
     base, ext = os.path.splitext(path)

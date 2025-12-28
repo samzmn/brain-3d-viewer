@@ -13,7 +13,7 @@ REM 3. Run PyInstaller (spec if exists, otherwise generate)
 if exist BrainViewer.spec (
     python -m PyInstaller BrainViewer.spec
 ) else (
-    pyinstaller --name BrainViewer --windowed --onedir --paths src src\main.py
+    pyinstaller --name BrainViewer --windowed --onedir --paths src --add-data "src/resources;resources" src\main.py
 )
 
 REM 4. Package source zip
