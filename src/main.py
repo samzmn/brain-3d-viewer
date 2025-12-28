@@ -68,7 +68,7 @@ class SliceCanvas(FigureCanvas):
         #     dpi=dpi
         # )
         # self.fig = Figure(figsize=figsize, dpi=dpi)
-        self.fig.tight_layout()
+        # self.fig.tight_layout()
         super().__init__(self.fig)
         self.setParent(parent)
         self.ax = self.fig.add_subplot(111)
@@ -192,9 +192,10 @@ class SliceCanvas(FigureCanvas):
         if event.inaxes != self.ax:
             return
         self.pressed = True
-        if self.on_drag and not self.zoom_enabled:
+        app = self.parent().parent()
+        app.canvas_clicked(self)  # notify main app
+        if not self.zoom_enabled and not app.brush_enabled and self.on_drag:
             self.on_drag(event.xdata, event.ydata)
-        self.parent().parent().canvas_clicked(self)  # notify main app
         self.prev_drag = (event.xdata, event.ydata)  # for panning
 
     def _on_move(self, event: MouseEvent):
@@ -212,7 +213,7 @@ class SliceCanvas(FigureCanvas):
                 return
 
             self.brush_cursor.center = (event.xdata, event.ydata)
-            self.brush_cursor.radius = (app.brush_radius - 0.5) * app.upsample_factor
+            self.brush_cursor.radius = app.get_brush_radius()
             self.brush_cursor.set_visible(True)
             self.draw_idle()
 
@@ -221,7 +222,7 @@ class SliceCanvas(FigureCanvas):
                 self._on_pan(event)
             elif app.brush_enabled:
                 self.brush_cursor.center = (event.xdata, event.ydata)
-                app._apply_brush(self, event)
+                app.apply_brush(self, event)
             else:
                 if self.on_drag:
                     self.on_drag(event.xdata, event.ydata)
@@ -231,7 +232,7 @@ class SliceCanvas(FigureCanvas):
         self.prev_drag = None
         app = self.parent().parent()
         if app.brush_enabled and not self.zoom_enabled:
-            app._apply_brush(self, event)
+            app.apply_brush(self, event)
 
     def _on_scroll(self, event: MouseEvent):
         step = 1 if event.button == 'up' else -1
@@ -379,7 +380,8 @@ class ViewerApp(QtWidgets.QMainWindow):
         self.brush_mode = "paint"  # or "erase"
 
         self.upsample_enabled = True
-        self.upsample_factor = 2.
+        self._init_upsample_factor = 4
+        self.upsample_factor = float(self._init_upsample_factor)
 
         self._init_toolbar()
         self._init_layout()
@@ -409,6 +411,7 @@ class ViewerApp(QtWidgets.QMainWindow):
         self.modality_group.addButton(self.t1_radio)
         self.modality_group.addButton(self.t2_radio)
         self.t1_radio.toggled.connect(self._change_modality)
+        self.t1_radio.toggled.connect(self._reset_default_filter_values)
         self.t1_radio.setDisabled(True)
         self.t2_radio.setDisabled(True)
         toolbar.addWidget(self.t1_radio)
@@ -470,7 +473,7 @@ class ViewerApp(QtWidgets.QMainWindow):
         self.addToolBar(QtCore.Qt.TopToolBarArea, toolbar2)
 
         self.filter_checkbox = QtWidgets.QCheckBox("Apply Filter ")
-        self.filter_checkbox.setChecked(False)
+        self.filter_checkbox.setChecked(True)
         self.filter_checkbox.stateChanged.connect(self._toggle_filter_checkbox)
         toolbar2.addWidget(self.filter_checkbox)
 
@@ -479,7 +482,7 @@ class ViewerApp(QtWidgets.QMainWindow):
         self.contrast_checkbox = QtWidgets.QCheckBox("Contrast: ")
         self.contrast_checkbox.setChecked(False)
         self.contrast_checkbox.stateChanged.connect(self._update_all)
-        self.contrast_checkbox.stateChanged.connect(self._reset_default_filter_values)
+        # self.contrast_checkbox.stateChanged.connect(self._reset_default_filter_values)
         toolbar2.addWidget(self.contrast_checkbox)
 
         self.contrast_slider = QtWidgets.QSlider(QtCore.Qt.Horizontal)
@@ -512,11 +515,11 @@ class ViewerApp(QtWidgets.QMainWindow):
         toolbar2.addWidget(self.upsample_checkbox)
 
         self.upsample_slider = QtWidgets.QSlider(QtCore.Qt.Horizontal)
-        self.upsample_slider.setMinimum(2)
-        self.upsample_slider.setMaximum(4)
-        self.upsample_slider.setValue(2)
+        self.upsample_slider.setMinimum(1)
+        self.upsample_slider.setMaximum(6)
+        self.upsample_slider.setValue(int(self.upsample_factor))
         self.upsample_slider.setSingleStep(1)
-        self.upsample_slider.setMaximumWidth(200)
+        self.upsample_slider.setMaximumWidth(300)
         self.upsample_slider.valueChanged.connect(self._upsample_slider_change)
         self.upsample_slider_label = QtWidgets.QLabel(f" X {self.upsample_factor}  ")
         self.upsample_slider.valueChanged.connect(lambda value: self.upsample_slider_label.setText(f" X {self.upsample_factor}  "))
@@ -623,11 +626,13 @@ class ViewerApp(QtWidgets.QMainWindow):
         # status bar text
         self.status = self.statusBar()
         self._update_status()
-
+    
     # ---------------- Status bar update ----------------
     def _update_status(self):
         if self.pos is not None:
-            self.status.showMessage(f'pos (x,y,z): {self.pos[0]}, {self.pos[1]}, {self.pos[2]}')
+            message = f"position (x,y,z): {self.pos[0]}, {self.pos[1]}, {self.pos[2]}    "
+            message += f"resolution: {self.shape[0] * self.upsample_factor:.0f}, {self.shape[1] * self.upsample_factor:.0f}, {self.shape[2] * self.upsample_factor:.0f}"
+            self.status.showMessage(message)
 
     # ---------------- Visual Filters Toolbar callbaccks -----------
     def _reset_default_filter_values(self):
@@ -762,7 +767,7 @@ class ViewerApp(QtWidgets.QMainWindow):
         return slice2d, seg_slice2d
 
     def _voxel_to_display(self, v):
-        return (v + 0.5) * self.upsample_factor
+        return (v + 0.5) * self._init_upsample_factor
 
     def _update_all(self):
         # update 2D images
@@ -814,30 +819,26 @@ class ViewerApp(QtWidgets.QMainWindow):
             c.draw_focus_border()
         self.focused_canvas = canvas
 
+    def _display_to_voxel(self, xpix: float, ypix: float) -> Tuple[int, int]:
+        x = int((xpix - 0.5) / self._init_upsample_factor)
+        y = int((ypix - 0.5) / self._init_upsample_factor)
+        return x, y
+    
     # ---------------- Drag callbacks ----------------
     def _on_axial_drag(self, xpix: float, ypix: float):
-        if xpix is None or ypix is None:
-            return
-        x = int(xpix / self.upsample_factor)
-        y = int(ypix / self.upsample_factor)
+        x, y = self._display_to_voxel(xpix, ypix)
         self.pos[0] = np.clip(self.shape[0] - 1 - x, 0, self.shape[0] - 1)
         self.pos[1] = np.clip(y, 0, self.shape[1] - 1)
         self._update_all()
 
     def _on_coronal_drag(self, xpix: float, ypix: float):
-        if xpix is None or ypix is None:
-            return
-        x = int(xpix / self.upsample_factor)
-        y = int(ypix / self.upsample_factor)
+        x, y = self._display_to_voxel(xpix, ypix)
         self.pos[0] = np.clip(self.shape[0] - 1 - x, 0, self.shape[0] - 1)
         self.pos[2] = np.clip(y, 0, self.shape[2] - 1)
         self._update_all()
 
     def _on_sagittal_drag(self, xpix: float, ypix: float):
-        if xpix is None or ypix is None:
-            return
-        x = int(xpix / self.upsample_factor)
-        y = int(ypix / self.upsample_factor)
+        x, y = self._display_to_voxel(xpix, ypix)
         self.pos[1] = np.clip(self.shape[1] - 1 - x, 0, self.shape[1] - 1)
         self.pos[2] = np.clip(y, 0, self.shape[2] - 1)
         self._update_all()
@@ -1041,6 +1042,11 @@ class ViewerApp(QtWidgets.QMainWindow):
 
         return super().eventFilter(obj, event)
     
+    def focusOutEvent(self, event):
+        self._toggle_brush_mode(False)
+        self._toggle_zoom_mode(False)
+        super().focusOutEvent(event)
+
     def _on_key_press(self, key):
         if self.active_label is None:
             return
@@ -1248,14 +1254,18 @@ class ViewerApp(QtWidgets.QMainWindow):
     def _set_brush_mode(self, mode):
         self.brush_mode = mode
 
-    def _apply_brush(self, canvas: SliceCanvas, event: MouseEvent):
+    def get_brush_radius(self):
+        return (self.brush_radius - 0.5) * self._init_upsample_factor
+    
+    def apply_brush(self, canvas: SliceCanvas, event: MouseEvent):
         if event.xdata is None or event.ydata is None:
             return
         if self.active_label is None:
             return
         
-        cx = int(round(event.xdata / self.upsample_factor))
-        cy = int(round(event.ydata / self.upsample_factor))
+        # cx = int(round(event.xdata) / self._init_upsample_factor)
+        # cy = int(round(event.ydata) / self._init_upsample_factor)
+        cx, cy = self._display_to_voxel(event.xdata, event.ydata)
         cx += 1 # because of a half-pixel coordinate mismatch between matplotlib and the data
 
         self._paint_circle(canvas, cx, cy)
@@ -1362,7 +1372,6 @@ class ViewerApp(QtWidgets.QMainWindow):
             self.upsample_slider_label.setText(f" X {self.upsample_factor}  ")
         else:
             self.upsample_factor = 1.
-            self.upsample_slider.setValue(int(self.upsample_factor))
             self.upsample_slider.setEnabled(False)
             self.upsample_slider_label.setText(f" X {self.upsample_factor}  ")
 
@@ -1391,18 +1400,17 @@ class ViewerApp(QtWidgets.QMainWindow):
         )
         if not path:
             return
-        self._load_new_volume(path, modality="T1")
-        self.t1_radio.setChecked(True)
-        self.t1_radio.setEnabled(True)
-        self.current_modality = "T1"
-
+        
         patient_id = os.path.basename(path).split("_")[1]
         masks_path = os.path.join(os.path.dirname(path), "masks")
         self.brainmask = load_volume(os.path.join(masks_path, f"brain_mask_of_subject_{patient_id}.nii.gz"))[0].astype(int)
         self.second_roi_mask = load_volume(os.path.join(masks_path, f"second_subcortical_mask_of_subject_{patient_id}.nii.gz"))[0].astype(int)
         # self.third_roi_mask = load_volume(os.path.join(masks_path, f"third_subcortical_mask_of_subject_{patient_id}.nii.gz"))[0].astype(int)
-        self.filter_checkbox.setChecked(True)
-        self.volume = self._apply_volume_normalization(self.t1_volume, self.brainmask)
+
+        self._load_new_volume(path, modality="T1")
+        self.t1_radio.setChecked(True)
+        self.t1_radio.setEnabled(True)
+        self.current_modality = "T1"
         # self.axial_volume = precompute_slab_volume(self.volume, axis=2, radius=1, sigma=0.8)
         self._update_all()
 
@@ -1417,19 +1425,25 @@ class ViewerApp(QtWidgets.QMainWindow):
         self.t2_radio.setEnabled(True)
         self.current_modality = "T2"
         self._update_all()
-
+        
     def _load_new_volume(self, path: str, modality: str = "T1"):
         data, aff = load_volume(path)
         # If shape changes, update sliders etc
         if modality == "T1":
             self.t1_volume = data.astype(float)
             self.t1_affine = aff
-            self.volume = self.t1_volume
+            if self.filter_checkbox.isChecked():
+                self.volume = self._apply_volume_normalization(self.t1_volume, self.brainmask)
+            else:
+                self.volume = self.t1_volume
             self.affine = self.t1_affine
         else:  # T2
             self.t2_volume = data.astype(float)
             self.t2_affine = aff
-            self.volume = self.t2_volume
+            if self.filter_checkbox.isChecked():
+                self.volume = self._apply_volume_normalization(self.t2_volume, self.brainmask)
+            else:
+                self.volume = self.t2_volume
             self.affine = self.t2_affine
 
         if self.t1_affine is not None and self.t2_affine is not None:
@@ -1460,6 +1474,9 @@ class ViewerApp(QtWidgets.QMainWindow):
         self.axial_label.setText(str(self.pos[2] + 1))
         self.coronal_label.setText(str(self.pos[1] + 1))
         self.sagittal_label.setText(str(self.pos[0] + 1))
+
+        self.upsample_factor = float(self._init_upsample_factor)
+        self.upsample_slider.setValue(self._init_upsample_factor)
 
     def _load_segmentation_nifti(self):
         path, _ = QtWidgets.QFileDialog.getOpenFileName(self, "Load Segmentation", "", "NIfTI (*.nii *.nii.gz)")
@@ -1579,6 +1596,7 @@ class ViewerApp(QtWidgets.QMainWindow):
         self.axial_canvas.show_empty()
         self.coronal_canvas.show_empty()
         self.sagittal_canvas.show_empty()
+        self.upsample_factor = float(self._init_upsample_factor)
 
     def _test_init(self):
         self._load_new_volume("./test_nifti_files/001/subject_001_T1_pre.nii.gz", modality="T1")

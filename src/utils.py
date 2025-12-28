@@ -42,8 +42,8 @@ def upsample_slice(slice2d, scale=2.0, order=1):
     """
     scale: 2.0 → 2x resolution in each dimension
     order: interpolation order
-           0 = nearest
-           1 = bilinear (recommended)
+           0 = nearest (for Label maps and masks)
+           1 = bilinear (for t1 and t2 MRI)
            3 = bicubic
     """
     return zoom(slice2d, zoom=scale, order=order)
