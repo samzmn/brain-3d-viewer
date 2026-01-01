@@ -4,7 +4,6 @@ from pathlib import Path
 from typing import Tuple
 import numpy as np
 import nibabel as nib
-from nibabel.orientations import aff2axcodes, io_orientation
 from scipy.ndimage import zoom
 import cv2
 
@@ -29,8 +28,8 @@ def load_volume(path, dtype=np.float32) -> Tuple[np.ndarray, np.ndarray]:
         # print('path: ', path)
         # print('shape:', nii.shape)
         # print('affine:\n', nii.affine)
-        # print('axcodes:', aff2axcodes(nii.affine))
-        # print('io_orientation:', io_orientation(nii.affine))  # shows axis mapping and signs
+        # print('axcodes:', nib.orientations.aff2axcodes(nii.affine))
+        # print('io_orientation:', nib.orientations.io_orientation(nii.affine))  # shows axis mapping and signs
         # print("zooms:", nii.header.get_zooms())
         # print("voxel sizes:", [np.linalg.norm(aff[:3,i]) for i in range(3)])
         # sx = np.linalg.norm(aff[:3,0])   # spacing along i axis (rows of data)
@@ -41,7 +40,7 @@ def load_volume(path, dtype=np.float32) -> Tuple[np.ndarray, np.ndarray]:
         return data, aff
     else:
         raise ValueError('Unsupported extension: ' + ext)
-    
+
 def label_structure(prob_map: np.ndarray, index: int, threshold:float=0.3) -> np.ndarray:
     label_map_np = np.zeros_like(prob_map, dtype=np.uint8)
     mask = (prob_map > threshold).astype(np.uint8)

@@ -1,7 +1,6 @@
 import sys
 import os
 import json
-import time
 from typing import Tuple
 
 import numpy as np
@@ -62,13 +61,6 @@ class SliceCanvas(FigureCanvas):
     """A matplotlib canvas showing a single 2D slice with a red crosshair."""
     def __init__(self, parent=None, title=""):
         self.fig = Figure(figsize=(16, 16), dpi=100)
-        # dpi = 100
-        # figsize = self._compute_figsize(
-        #     shape=(512, 512),  # placeholder, updated later
-        #     scale=1.0,
-        #     dpi=dpi
-        # )
-        # self.fig = Figure(figsize=figsize, dpi=dpi)
         self.fig.tight_layout(pad=0.)
         super().__init__(self.fig)
         self.setParent(parent)
@@ -327,30 +319,6 @@ class SliceCanvas(FigureCanvas):
             self.brush_cursor.set_edgecolor((r, g, b, 0.8))
             self.draw_idle()
 
-    # def _compute_figsize(self, shape, scale, dpi, max_inches=32):
-    #     H, W = shape
-    #     H *= scale
-    #     W *= scale
-
-    #     fig_w = W / dpi
-    #     fig_h = H / dpi
-
-    #     # constrain to reasonable screen size
-    #     scale_down = max(fig_w / max_inches, fig_h / max_inches, 1.0)
-
-    #     return fig_w / scale_down, fig_h / scale_down
-
-    # def update_figure_size(self, slice_shape, upsample_factor):
-    #     dpi = self.fig.get_dpi()
-
-    #     fig_w, fig_h = self._compute_figsize(
-    #         slice_shape,
-    #         upsample_factor,
-    #         dpi
-    #     )
-
-    #     self.fig.set_size_inches(fig_w, fig_h, forward=True)
-    #     self.draw_idle()
 
 class ViewerApp(QtWidgets.QMainWindow):
     def __init__(self):
@@ -673,7 +641,6 @@ class ViewerApp(QtWidgets.QMainWindow):
             # slice2d = enhance.roi_dog_enhance(slice2d, roi_mask, sigma_low=0.6, sigma_high=1.2, amount=0.25)
         else:
             contrast_value = self.contrast_slider.value() / 1000
-            # slice2d = enhance.roi_clahe(slice2d, roi_mask, kernel_size=24, clip_limit=contrast_value, blend=0.5)
             slice2d = enhance.roi_clahe_fast(slice2d, roi_mask, kernel_size=24, clip_limit=contrast_value, blend=0.5)
             # slice2d = enhance.roi_window_tighten(slice2d, roi_mask, low_pct=1, high_pct=99)
         return slice2d
@@ -705,15 +672,11 @@ class ViewerApp(QtWidgets.QMainWindow):
                 slice2d = self._apply_roi_filter(slice2d, roi_mask)
 
         if self.upsample_enabled:
-            # slice2d = upsample_slice(slice2d, self.upsample_factor, order=1)
             slice2d = fast_mri_slice_upsample(slice2d, self.upsample_factor)
 
         if self.seg_rgba is not None and self.seg_checkbox.isChecked():
             seg_slice2d = self._make_seg_overlay(self.seg_rgba[:, :, self.pos[2]])
             if self.upsample_enabled:
-                # seg_slice2d = upsample_slice(seg_slice2d, 
-                #                              (self.upsample_factor, self.upsample_factor, 1),
-                #                              order=0)
                 seg_slice2d = fast_seg_slice_upsample(seg_slice2d, self.upsample_factor)
         else:
             seg_slice2d = None
@@ -730,15 +693,11 @@ class ViewerApp(QtWidgets.QMainWindow):
                 slice2d = self._apply_roi_filter(slice2d, roi_mask)
 
         if self.upsample_enabled:
-            # slice2d = upsample_slice(slice2d, self.upsample_factor, order=1)
             slice2d = fast_mri_slice_upsample(slice2d, self.upsample_factor)
 
         if self.seg_rgba is not None and self.seg_checkbox.isChecked():
             seg_slice2d = self._make_seg_overlay(self.seg_rgba[:, self.pos[1], :])
             if self.upsample_enabled:
-                # seg_slice2d = upsample_slice(seg_slice2d, 
-                #                              (self.upsample_factor,self.upsample_factor, 1),
-                #                              order=0)
                 seg_slice2d = fast_seg_slice_upsample(seg_slice2d, self.upsample_factor)
         else:
             seg_slice2d = None
@@ -755,15 +714,11 @@ class ViewerApp(QtWidgets.QMainWindow):
                 slice2d = self._apply_roi_filter(slice2d, roi_mask)
 
         if self.upsample_enabled:
-            # slice2d = upsample_slice(slice2d, self.upsample_factor, order=1)
             slice2d = fast_mri_slice_upsample(slice2d, self.upsample_factor)
 
         if self.seg_rgba is not None and self.seg_checkbox.isChecked():
             seg_slice2d = self._make_seg_overlay(self.seg_rgba[self.pos[0], :, :])
             if self.upsample_enabled:
-                # seg_slice2d = upsample_slice(seg_slice2d, 
-                #                              (self.upsample_factor, self.upsample_factor, 1),
-                #                              order=0)
                 seg_slice2d = fast_seg_slice_upsample(seg_slice2d, self.upsample_factor)
         else:
             seg_slice2d = None
@@ -774,12 +729,11 @@ class ViewerApp(QtWidgets.QMainWindow):
 
     def _update_all(self):
         # update 2D images
-        start = time.time()
         self.axial_canvas.show_slice(*self._get_axial())
         self.coronal_canvas.show_slice(*self._get_coronal())
         self.sagittal_canvas.show_slice(*self._get_sagittal())
         # self.axial_canvas_2.show_slice(*self._get_normal_axial())
-        print(f"Updated slices in {time.time() - start:.3f} sec")
+        
         # update crosshairs: compute pixel coords for each canvas
         self.axial_canvas.set_crosshair(
             self._voxel_to_display(self.shape[0] - 1 - self.pos[0]),
@@ -1387,16 +1341,6 @@ class ViewerApp(QtWidgets.QMainWindow):
         # self._update_canvases_figures()
         self._update_all()
 
-    # def _update_canvases_figures(self):
-    #     if self.volume is None:
-    #         return
-    #     axial_slice_shape = (self.shape[1], self.shape[0])
-    #     coronal_slice_shape = (self.shape[2], self.shape[0])
-    #     sagittal_slice_shape = (self.shape[2], self.shape[1])
-    #     self.axial_canvas.update_figure_size(axial_slice_shape, self.upsample_factor)
-    #     self.coronal_canvas.update_figure_size(coronal_slice_shape, self.upsample_factor)
-    #     self.sagittal_canvas.update_figure_size(sagittal_slice_shape, self.upsample_factor)
-
     # ---------------- Load volume ----------------
     def _load_t1_volume(self):
         path, _ = QtWidgets.QFileDialog.getOpenFileName(
@@ -1409,13 +1353,11 @@ class ViewerApp(QtWidgets.QMainWindow):
         masks_path = os.path.join(os.path.dirname(path), "masks")
         self.brainmask = load_volume(os.path.join(masks_path, f"brain_mask_of_subject_{patient_id}.nii.gz"))[0].astype(int)
         self.second_roi_mask = load_volume(os.path.join(masks_path, f"second_subcortical_mask_of_subject_{patient_id}.nii.gz"))[0].astype(bool)
-        # self.third_roi_mask = load_volume(os.path.join(masks_path, f"third_subcortical_mask_of_subject_{patient_id}.nii.gz"))[0].astype(int)
 
         self._load_new_volume(path, modality="T1")
         self.t1_radio.setChecked(True)
         self.t1_radio.setEnabled(True)
         self.current_modality = "T1"
-        # self.axial_volume = precompute_slab_volume(self.volume, axis=2, radius=1, sigma=0.8)
         self._update_all()
 
     def _load_t2_volume(self):
@@ -1465,8 +1407,6 @@ class ViewerApp(QtWidgets.QMainWindow):
         self.coronal_canvas.aspect = sz / sx
         self.sagittal_canvas.aspect = sz / sy
         self.axial_canvas_2.aspect = sy / sx
-
-        # self._update_canvases_figures()
 
         # update slider ranges
         self.axial_slider.setRange(0, self.shape[2] - 1)
