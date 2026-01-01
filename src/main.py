@@ -386,7 +386,7 @@ class ViewerApp(QtWidgets.QMainWindow):
 
         self._init_toolbar()
         self._init_layout()
-        # self._test_init() # initialize images
+        self._test_init() # initialize images
 
     def _init_toolbar(self):
         # ----------------------- TOP TOOL BAR -----------------------
@@ -663,6 +663,20 @@ class ViewerApp(QtWidgets.QMainWindow):
         self._update_all()
 
     # ---------------- 2D slices ----------------
+    def _apply_roi_filter(self, slice2d, roi_mask):
+        denoise_value = self.denoise_slider.value() / 100
+        slice2d = enhance.roi_denoise(slice2d, roi_mask, sigma=denoise_value)
+        if self.current_modality == "T1":
+            contrast_value = self.contrast_slider.value()
+            slice2d = enhance.roi_window_tighten(slice2d, roi_mask, low_pct=contrast_value, high_pct=100 - contrast_value)
+            # slice2d = enhance.roi_clahe(slice2d, roi_mask, kernel_size=16, clip_limit=0.01, blend=0.3)
+            # slice2d = enhance.roi_dog_enhance(slice2d, roi_mask, sigma_low=0.6, sigma_high=1.2, amount=0.25)
+        else:
+            contrast_value = self.contrast_slider.value() / 1000
+            slice2d = enhance.roi_clahe(slice2d, roi_mask, kernel_size=24, clip_limit=contrast_value, blend=0.5)
+            slice2d = enhance.roi_window_tighten(slice2d, roi_mask, low_pct=1, high_pct=99)
+        return slice2d
+
     def _make_seg_overlay(self, seg2d):
         """Given a seg2d RGBA slice, apply opacity and return overlay."""
         overlay = seg2d.copy()
@@ -681,35 +695,23 @@ class ViewerApp(QtWidgets.QMainWindow):
     
     def _get_axial(self) -> Tuple[np.ndarray, np.ndarray]:
         slice2d = self.volume[:, :, self.pos[2], :] if self.is_rgb else self.volume[:, :, self.pos[2]]
-        # slice2d = axial_slab_average(self.volume.copy(), self.pos[2])
         slice2d = np.fliplr(slice2d.T)  # transpose for correct orientation
-        if self.upsample_enabled:
-            slice2d = upsample_slice(slice2d, self.upsample_factor, order=1)
 
         if self.contrast_checkbox.isChecked() and self.filter_checkbox.isChecked():
             roi_mask = self.second_roi_mask[:, :, self.pos[2]]
-            roi_mask = np.fliplr(roi_mask.T)
-            if self.upsample_enabled:
-                roi_mask = upsample_slice(roi_mask, self.upsample_factor, order=0)
-            denoise_value = self.denoise_slider.value() / 100
-            slice2d = enhance.roi_denoise(slice2d, roi_mask, sigma=denoise_value)
-            if self.current_modality == "T1":
-                contrast_value = self.contrast_slider.value()
-                slice2d = enhance.roi_window_tighten(slice2d, roi_mask, low_pct=contrast_value, high_pct=100 - contrast_value)
-                # slice2d = enhance.roi_clahe(slice2d, roi_mask, kernel_size=16, clip_limit=0.01, blend=0.3)
-                # slice2d = enhance.roi_dog_enhance(slice2d, roi_mask, sigma_low=0.6, sigma_high=1.2, amount=0.25)
-            else:
-                contrast_value = self.contrast_slider.value() / 1000
-                slice2d = enhance.roi_clahe(slice2d, roi_mask, kernel_size=24, clip_limit=contrast_value, blend=0.5)
-                slice2d = enhance.roi_window_tighten(slice2d, roi_mask, low_pct=1, high_pct=99)
+            if not np.all(roi_mask==0.):
+                roi_mask = np.fliplr(roi_mask.T)
+                slice2d = self._apply_roi_filter(slice2d, roi_mask)
+
+        if self.upsample_enabled:
+            slice2d = upsample_slice(slice2d, self.upsample_factor, order=1)
 
         if self.seg_rgba is not None and self.seg_checkbox.isChecked():
             seg_slice2d = self._make_seg_overlay(self.seg_rgba[:, :, self.pos[2]])
             if self.upsample_enabled:
-                seg_slice2d = upsample_slice(seg_slice2d, (self.upsample_factor,
-                                            self.upsample_factor,
-                                            1),
-                                order=0)
+                seg_slice2d = upsample_slice(seg_slice2d, 
+                                             (self.upsample_factor, self.upsample_factor, 1),
+                                             order=0)
         else:
             seg_slice2d = None
         return slice2d, seg_slice2d
@@ -717,33 +719,22 @@ class ViewerApp(QtWidgets.QMainWindow):
     def _get_coronal(self) -> Tuple[np.ndarray, np.ndarray]:
         slice2d = self.volume[:, self.pos[1], :, :] if self.is_rgb else self.volume[:, self.pos[1], :]
         slice2d = np.fliplr(slice2d.T)  # transpose for correct orientation
-        if self.upsample_enabled:
-            slice2d = upsample_slice(slice2d, self.upsample_factor, order=1)
-
+        
         if self.contrast_checkbox.isChecked() and self.filter_checkbox.isChecked():
             roi_mask = self.second_roi_mask[:, self.pos[1], :]
-            roi_mask = np.fliplr(roi_mask.T)
-            if self.upsample_enabled:
-                roi_mask = upsample_slice(roi_mask, self.upsample_factor, order=0)
-            denoise_value = self.denoise_slider.value() / 100
-            slice2d = enhance.roi_denoise(slice2d, roi_mask, sigma=denoise_value)
-            if self.current_modality == "T1":
-                contrast_value = self.contrast_slider.value()
-                slice2d = enhance.roi_window_tighten(slice2d, roi_mask, low_pct=contrast_value, high_pct=100 - contrast_value)
-                # slice2d = enhance.roi_clahe(slice2d, roi_mask, kernel_size=16, clip_limit=0.01, blend=0.3)
-                # slice2d = enhance.roi_dog_enhance(slice2d, roi_mask, sigma_low=0.6, sigma_high=1.2, amount=0.25)
-            else:
-                contrast_value = self.contrast_slider.value() / 1000
-                slice2d = enhance.roi_clahe(slice2d, roi_mask, kernel_size=24, clip_limit=contrast_value, blend=0.5)
-                slice2d = enhance.roi_window_tighten(slice2d, roi_mask, low_pct=1, high_pct=99)
+            if not np.all(roi_mask==0.):
+                roi_mask = np.fliplr(roi_mask.T)
+                slice2d = self._apply_roi_filter(slice2d, roi_mask)
+
+        if self.upsample_enabled:
+            slice2d = upsample_slice(slice2d, self.upsample_factor, order=1)
 
         if self.seg_rgba is not None and self.seg_checkbox.isChecked():
             seg_slice2d = self._make_seg_overlay(self.seg_rgba[:, self.pos[1], :])
             if self.upsample_enabled:
-                seg_slice2d = upsample_slice(seg_slice2d, (self.upsample_factor,
-                                            self.upsample_factor,
-                                            1),
-                                order=0)
+                seg_slice2d = upsample_slice(seg_slice2d, 
+                                             (self.upsample_factor,self.upsample_factor, 1),
+                                             order=0)
         else:
             seg_slice2d = None
         return slice2d, seg_slice2d
@@ -751,33 +742,22 @@ class ViewerApp(QtWidgets.QMainWindow):
     def _get_sagittal(self) -> Tuple[np.ndarray, np.ndarray]:
         slice2d = self.volume[self.pos[0], :, :, :] if self.is_rgb else self.volume[self.pos[0], :, :]
         slice2d = np.fliplr(slice2d.T)  # transpose for correct orientation
-        if self.upsample_enabled:
-            slice2d = upsample_slice(slice2d, self.upsample_factor, order=1)
-
+        
         if self.contrast_checkbox.isChecked() and self.filter_checkbox.isChecked():
             roi_mask = self.second_roi_mask[self.pos[0], :, :]
-            roi_mask = np.fliplr(roi_mask.T)
-            if self.upsample_enabled:
-                roi_mask = upsample_slice(roi_mask, self.upsample_factor, order=0)
-            denoise_value = self.denoise_slider.value() / 100
-            slice2d = enhance.roi_denoise(slice2d, roi_mask, sigma=denoise_value)
-            if self.current_modality == "T1":
-                contrast_value = self.contrast_slider.value()
-                slice2d = enhance.roi_window_tighten(slice2d, roi_mask, low_pct=contrast_value, high_pct=100 - contrast_value)
-                # slice2d = enhance.roi_clahe(slice2d, roi_mask, kernel_size=16, clip_limit=0.01, blend=0.3)
-                # slice2d = enhance.roi_dog_enhance(slice2d, roi_mask, sigma_low=0.6, sigma_high=1.2, amount=0.25)
-            else:
-                contrast_value = self.contrast_slider.value() / 1000
-                slice2d = enhance.roi_clahe(slice2d, roi_mask, kernel_size=24, clip_limit=contrast_value, blend=0.5)
-                slice2d = enhance.roi_window_tighten(slice2d, roi_mask, low_pct=1, high_pct=99)
+            if not np.all(roi_mask==0.):
+                roi_mask = np.fliplr(roi_mask.T)
+                slice2d = self._apply_roi_filter(slice2d, roi_mask)
+
+        if self.upsample_enabled:
+            slice2d = upsample_slice(slice2d, self.upsample_factor, order=1)
 
         if self.seg_rgba is not None and self.seg_checkbox.isChecked():
             seg_slice2d = self._make_seg_overlay(self.seg_rgba[self.pos[0], :, :])
             if self.upsample_enabled:
-                seg_slice2d = upsample_slice(seg_slice2d, (self.upsample_factor,
-                                            self.upsample_factor,
-                                            1),
-                                order=0)
+                seg_slice2d = upsample_slice(seg_slice2d, 
+                                             (self.upsample_factor, self.upsample_factor, 1),
+                                             order=0)
         else:
             seg_slice2d = None
         return slice2d, seg_slice2d

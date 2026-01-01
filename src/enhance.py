@@ -167,8 +167,7 @@ def roi_window_tighten(
     """
     Gentle contrast tightening inside ROI.
     """
-    roi_mask = roi_mask.astype(bool)
-    vals = img[roi_mask]
+    vals = img[roi_mask.astype(bool)]
     # print(img.shape, np.min(img), np.max(img), img.dtype)
     # print(roi_mask.shape, np.min(roi_mask), np.max(roi_mask), roi_mask.dtype)
     # print(vals.shape, np.min(vals), np.max(vals), vals.dtype)
