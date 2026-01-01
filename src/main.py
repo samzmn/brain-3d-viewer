@@ -1,8 +1,8 @@
 import sys
 import os
 import json
+import time
 from typing import Tuple
-from pathlib import Path
 
 import numpy as np
 import nibabel as nib
@@ -13,7 +13,7 @@ from matplotlib.figure import Figure
 from matplotlib.backend_bases import MouseEvent
 import matplotlib.patches as patches
 
-from utils import load_volume, label_structure, upsample_slice, resource_path
+from utils import load_volume, label_structure, resource_path, fast_mri_slice_upsample, fast_seg_slice_upsample
 import enhance
 
 
@@ -673,8 +673,9 @@ class ViewerApp(QtWidgets.QMainWindow):
             # slice2d = enhance.roi_dog_enhance(slice2d, roi_mask, sigma_low=0.6, sigma_high=1.2, amount=0.25)
         else:
             contrast_value = self.contrast_slider.value() / 1000
-            slice2d = enhance.roi_clahe(slice2d, roi_mask, kernel_size=24, clip_limit=contrast_value, blend=0.5)
-            slice2d = enhance.roi_window_tighten(slice2d, roi_mask, low_pct=1, high_pct=99)
+            # slice2d = enhance.roi_clahe(slice2d, roi_mask, kernel_size=24, clip_limit=contrast_value, blend=0.5)
+            slice2d = enhance.roi_clahe_fast(slice2d, roi_mask, kernel_size=24, clip_limit=contrast_value, blend=0.5)
+            # slice2d = enhance.roi_window_tighten(slice2d, roi_mask, low_pct=1, high_pct=99)
         return slice2d
 
     def _make_seg_overlay(self, seg2d):
@@ -699,19 +700,21 @@ class ViewerApp(QtWidgets.QMainWindow):
 
         if self.contrast_checkbox.isChecked() and self.filter_checkbox.isChecked():
             roi_mask = self.second_roi_mask[:, :, self.pos[2]]
-            if not np.all(roi_mask==0.):
+            if not np.all(roi_mask==False):
                 roi_mask = np.fliplr(roi_mask.T)
                 slice2d = self._apply_roi_filter(slice2d, roi_mask)
 
         if self.upsample_enabled:
-            slice2d = upsample_slice(slice2d, self.upsample_factor, order=1)
+            # slice2d = upsample_slice(slice2d, self.upsample_factor, order=1)
+            slice2d = fast_mri_slice_upsample(slice2d, self.upsample_factor)
 
         if self.seg_rgba is not None and self.seg_checkbox.isChecked():
             seg_slice2d = self._make_seg_overlay(self.seg_rgba[:, :, self.pos[2]])
             if self.upsample_enabled:
-                seg_slice2d = upsample_slice(seg_slice2d, 
-                                             (self.upsample_factor, self.upsample_factor, 1),
-                                             order=0)
+                # seg_slice2d = upsample_slice(seg_slice2d, 
+                #                              (self.upsample_factor, self.upsample_factor, 1),
+                #                              order=0)
+                seg_slice2d = fast_seg_slice_upsample(seg_slice2d, self.upsample_factor)
         else:
             seg_slice2d = None
         return slice2d, seg_slice2d
@@ -722,19 +725,21 @@ class ViewerApp(QtWidgets.QMainWindow):
         
         if self.contrast_checkbox.isChecked() and self.filter_checkbox.isChecked():
             roi_mask = self.second_roi_mask[:, self.pos[1], :]
-            if not np.all(roi_mask==0.):
+            if not np.all(roi_mask==False):
                 roi_mask = np.fliplr(roi_mask.T)
                 slice2d = self._apply_roi_filter(slice2d, roi_mask)
 
         if self.upsample_enabled:
-            slice2d = upsample_slice(slice2d, self.upsample_factor, order=1)
+            # slice2d = upsample_slice(slice2d, self.upsample_factor, order=1)
+            slice2d = fast_mri_slice_upsample(slice2d, self.upsample_factor)
 
         if self.seg_rgba is not None and self.seg_checkbox.isChecked():
             seg_slice2d = self._make_seg_overlay(self.seg_rgba[:, self.pos[1], :])
             if self.upsample_enabled:
-                seg_slice2d = upsample_slice(seg_slice2d, 
-                                             (self.upsample_factor,self.upsample_factor, 1),
-                                             order=0)
+                # seg_slice2d = upsample_slice(seg_slice2d, 
+                #                              (self.upsample_factor,self.upsample_factor, 1),
+                #                              order=0)
+                seg_slice2d = fast_seg_slice_upsample(seg_slice2d, self.upsample_factor)
         else:
             seg_slice2d = None
         return slice2d, seg_slice2d
@@ -745,19 +750,21 @@ class ViewerApp(QtWidgets.QMainWindow):
         
         if self.contrast_checkbox.isChecked() and self.filter_checkbox.isChecked():
             roi_mask = self.second_roi_mask[self.pos[0], :, :]
-            if not np.all(roi_mask==0.):
+            if not np.all(roi_mask==False):
                 roi_mask = np.fliplr(roi_mask.T)
                 slice2d = self._apply_roi_filter(slice2d, roi_mask)
 
         if self.upsample_enabled:
-            slice2d = upsample_slice(slice2d, self.upsample_factor, order=1)
+            # slice2d = upsample_slice(slice2d, self.upsample_factor, order=1)
+            slice2d = fast_mri_slice_upsample(slice2d, self.upsample_factor)
 
         if self.seg_rgba is not None and self.seg_checkbox.isChecked():
             seg_slice2d = self._make_seg_overlay(self.seg_rgba[self.pos[0], :, :])
             if self.upsample_enabled:
-                seg_slice2d = upsample_slice(seg_slice2d, 
-                                             (self.upsample_factor, self.upsample_factor, 1),
-                                             order=0)
+                # seg_slice2d = upsample_slice(seg_slice2d, 
+                #                              (self.upsample_factor, self.upsample_factor, 1),
+                #                              order=0)
+                seg_slice2d = fast_seg_slice_upsample(seg_slice2d, self.upsample_factor)
         else:
             seg_slice2d = None
         return slice2d, seg_slice2d
@@ -767,11 +774,12 @@ class ViewerApp(QtWidgets.QMainWindow):
 
     def _update_all(self):
         # update 2D images
+        start = time.time()
         self.axial_canvas.show_slice(*self._get_axial())
         self.coronal_canvas.show_slice(*self._get_coronal())
         self.sagittal_canvas.show_slice(*self._get_sagittal())
         # self.axial_canvas_2.show_slice(*self._get_normal_axial())
-
+        print(f"Updated slices in {time.time() - start:.3f} sec")
         # update crosshairs: compute pixel coords for each canvas
         self.axial_canvas.set_crosshair(
             self._voxel_to_display(self.shape[0] - 1 - self.pos[0]),
@@ -1400,7 +1408,7 @@ class ViewerApp(QtWidgets.QMainWindow):
         patient_id = os.path.basename(path).split("_")[1]
         masks_path = os.path.join(os.path.dirname(path), "masks")
         self.brainmask = load_volume(os.path.join(masks_path, f"brain_mask_of_subject_{patient_id}.nii.gz"))[0].astype(int)
-        self.second_roi_mask = load_volume(os.path.join(masks_path, f"second_subcortical_mask_of_subject_{patient_id}.nii.gz"))[0].astype(int)
+        self.second_roi_mask = load_volume(os.path.join(masks_path, f"second_subcortical_mask_of_subject_{patient_id}.nii.gz"))[0].astype(bool)
         # self.third_roi_mask = load_volume(os.path.join(masks_path, f"third_subcortical_mask_of_subject_{patient_id}.nii.gz"))[0].astype(int)
 
         self._load_new_volume(path, modality="T1")
@@ -1600,7 +1608,7 @@ class ViewerApp(QtWidgets.QMainWindow):
         self.t1_radio.setEnabled(True)
         self.t2_radio.setEnabled(True)
         self.brainmask = load_volume("./test_nifti_files/001/masks/brain_mask_of_subject_001.nii.gz")[0].astype(int)
-        self.second_roi_mask = load_volume("./test_nifti_files/001/masks/second_subcortical_mask_of_subject_001.nii.gz")[0].astype(int)
+        self.second_roi_mask = load_volume("./test_nifti_files/001/masks/second_subcortical_mask_of_subject_001.nii.gz")[0].astype(bool)
         # self.third_roi_mask = load_volume("./test_nifti_files/001/masks/third_subcortical_mask_of_subject_001.nii.gz")[0].astype(int)
         self.filter_checkbox.setChecked(True)
         self.volume = self._apply_volume_normalization(self.t1_volume, self.brainmask)

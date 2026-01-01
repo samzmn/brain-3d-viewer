@@ -6,7 +6,7 @@ import numpy as np
 import nibabel as nib
 from nibabel.orientations import aff2axcodes, io_orientation
 from scipy.ndimage import zoom
-
+import cv2
 
 def resource_path(relative):
     if hasattr(sys, "_MEIPASS"):
@@ -58,7 +58,23 @@ def upsample_slice(slice2d, scale=2.0, order=1):
     """
     return zoom(slice2d, zoom=scale, order=order)
 
-def world_coords_of_axial_slice2d(volume: np.ndarray, slice_idx: int, affine: np.ndarray):
+def fast_mri_slice_upsample(img, factor):
+    h, w = img.shape[:2]
+    return cv2.resize(
+        img,
+        (int(w * factor), int(h * factor)),
+        interpolation=cv2.INTER_LINEAR
+    )
+
+def fast_seg_slice_upsample(img, factor):
+    h, w = img.shape[:2]
+    return cv2.resize(
+        img,
+        (int(w * factor), int(h * factor)),
+        interpolation=cv2.INTER_NEAREST
+    )
+
+def world_corners_of_axial_slice2d(volume: np.ndarray, slice_idx: int, affine: np.ndarray):
     # axial example: compute world coords for image corners of slice k
     nx, ny, nz = volume.shape
     # corners in voxel index space (i,j,k)
@@ -81,7 +97,7 @@ def world_coords_of_axial_slice2d(volume: np.ndarray, slice_idx: int, affine: np
 
     return extend
 
-def world_coords_of_coronal_slice2d(volume: np.ndarray, slice_idx: int, affine: np.ndarray):
+def world_corners_of_coronal_slice2d(volume: np.ndarray, slice_idx: int, affine: np.ndarray):
     # coronal example: compute world coords for image corners of slice k
     nx, ny, nz = volume.shape
     # corners in voxel index space (i,j,k)
@@ -96,7 +112,7 @@ def world_coords_of_coronal_slice2d(volume: np.ndarray, slice_idx: int, affine: 
 
     return [xmin, xmax, ymin, ymax]
 
-def world_coords_of_sagittal_slice2d(volume: np.ndarray, slice_idx: int, affine: np.ndarray):
+def world_corners_of_sagittal_slice2d(volume: np.ndarray, slice_idx: int, affine: np.ndarray):
     # coronal example: compute world coords for image corners of slice k
     nx, ny, nz = volume.shape
     # corners in voxel index space (i,j,k)

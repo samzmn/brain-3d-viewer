@@ -137,6 +137,78 @@ def roi_clahe(
     blended = (1 - blend) * img + blend * clahe_img
     return img * (1 - roi_mask) + blended * roi_mask
 
+def roi_clahe_fast(img, roi_mask, kernel_size=24, clip_limit=0.01, blend=0.5):
+    xs, ys = np.nonzero(roi_mask)
+    if len(xs) == 0:
+        return img
+
+    x0, x1 = xs.min(), xs.max() + 1
+    y0, y1 = ys.min(), ys.max() + 1
+
+    sub = img[x0:x1, y0:y1]
+
+    clahe_sub = equalize_adapthist(
+        sub,
+        kernel_size=(kernel_size, kernel_size),
+        clip_limit=clip_limit
+    )
+
+    blended = (1 - blend) * sub + blend * clahe_sub
+
+    # out = img.copy()
+    # mask_sub = roi_mask[x0:x1, y0:y1]
+    # out[x0:x1, y0:y1][mask_sub] = blended[mask_sub]
+    img[x0:x1, y0:y1] = blended
+
+    return img
+
+class ROIStatsCache:
+    def __init__(self):
+        self.cache = {}
+
+    def get(self, img: np.ndarray, roi_mask: np.ndarray, low, high):
+        key = (f"{img.mean():.4f}", f"{roi_mask.sum()}", low, high)
+        if key not in self.cache:
+            vals = img[roi_mask.astype(bool)]
+            self.cache[key] = (
+                np.percentile(vals, low),
+                np.percentile(vals, high),
+            )
+        return self.cache[key]
+
+roi_stats_cache = ROIStatsCache()
+
+def fast_percentile_from_hist(vals, low_pct, high_pct, bins=512):
+    hist, bin_edges = np.histogram(vals, bins=bins)
+    cdf = np.cumsum(hist)
+    cdf = cdf / cdf[-1]
+
+    lo = bin_edges[np.searchsorted(cdf, low_pct / 100)]
+    hi = bin_edges[np.searchsorted(cdf, high_pct / 100)]
+    return lo, hi
+
+def roi_window_tighten(
+    img: np.ndarray,
+    roi_mask: np.ndarray,
+    low_pct=20,
+    high_pct=80
+):
+    """
+    Gentle contrast tightening inside ROI.
+    """
+    vals = img[roi_mask]
+    lo, hi = np.percentile(vals, [low_pct, high_pct])
+    # lo, hi = roi_stats_cache.get(img, roi_mask, low_pct, high_pct)
+    # lo, hi = fast_percentile_from_hist(img[roi_mask], low_pct, high_pct)
+
+    # out = img.copy()
+    img[roi_mask] = np.clip(
+        (img[roi_mask] - lo) / (hi - lo + 1e-8),
+        0.0,
+        1.0
+    )
+    return img
+
 def roi_dog_enhance(
     img,
     roi_mask,
@@ -156,31 +228,6 @@ def roi_dog_enhance(
     out = img.copy()
     out[roi_mask] = img[roi_mask] + amount * dog[roi_mask]
 
-    return out
-
-def roi_window_tighten(
-    img: np.ndarray,
-    roi_mask: np.ndarray,
-    low_pct=20,
-    high_pct=80
-):
-    """
-    Gentle contrast tightening inside ROI.
-    """
-    vals = img[roi_mask.astype(bool)]
-    # print(img.shape, np.min(img), np.max(img), img.dtype)
-    # print(roi_mask.shape, np.min(roi_mask), np.max(roi_mask), roi_mask.dtype)
-    # print(vals.shape, np.min(vals), np.max(vals), vals.dtype)
-    lo = np.percentile(vals, low_pct)
-    hi = np.percentile(vals, high_pct)
-    # print("lo, hi: ", lo, hi)
-    out = img.copy()
-    out[roi_mask] = np.clip(
-        (img[roi_mask] - lo) / (hi - lo + 1e-8),
-        0.0,
-        1.0
-    )
-    # print(out.shape, np.min(out), np.max(out), out.dtype)
     return out
 
 def roi_unsharp(img, roi_mask, sigma=1.0, amount=0.6):
