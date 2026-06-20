@@ -1,29 +1,35 @@
 import sys
-import os
-import json
-from typing import Tuple, Dict
+from typing import Tuple
 
 import numpy as np
-import nibabel as nib
 from PyQt5 import QtWidgets, QtCore, QtGui
 from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
 from matplotlib.figure import Figure
 from matplotlib.backend_bases import MouseEvent
 import matplotlib.patches as patches
 
-from utils import load_volume, resource_path, fast_mri_slice_upsample, fast_seg_slice_upsample
+from utils import load_volume, resource_path, fast_mri_slice_upsample
 import enhance
-import segmenting
 
 
 class SliceCanvas(FigureCanvas):
     """A matplotlib canvas showing a single 2D slice with a red crosshair."""
     def __init__(self, parent=None, title=""):
         self.fig = Figure(figsize=(16, 16), dpi=100)
-        self.fig.tight_layout(pad=0.)
         super().__init__(self.fig)
         self.setParent(parent)
-        self.ax = self.fig.add_subplot(111)
+        
+        self.ax = self.fig.add_axes([0,0,1,1])  # instead of add_subplot
+
+        self.fig.subplots_adjust(
+            left=0,
+            right=1,
+            bottom=0,
+            top=1
+        )
+
+        self.fig.patch.set_facecolor("#000000FC")
+        
         self.ax.set_title(title)
         self.title = title
         self.shape = None
@@ -120,7 +126,6 @@ class SliceCanvas(FigureCanvas):
 
     def _on_move(self, event: MouseEvent):
         if event.inaxes != self.ax:
-            self.brush_cursor.set_visible(False)
             self.draw_idle()
             return
 
@@ -221,13 +226,6 @@ class SliceCanvas(FigureCanvas):
             self.ax.set_ylim(new_y0, new_y1)
 
         self.draw_idle()
-
-    def set_brush_color(self, rgba):
-        if hasattr(self, "brush_cursor"):
-            self.brush_cursor.set_facecolor(rgba)
-            r, g, b, _ = rgba
-            self.brush_cursor.set_edgecolor((r, g, b, 0.8))
-            self.draw_idle()
 
 
 class ViewerApp(QtWidgets.QMainWindow):

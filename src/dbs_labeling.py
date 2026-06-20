@@ -61,10 +61,20 @@ class SliceCanvas(FigureCanvas):
     """A matplotlib canvas showing a single 2D slice with a red crosshair."""
     def __init__(self, parent=None, title=""):
         self.fig = Figure(figsize=(16, 16), dpi=100)
-        self.fig.tight_layout(pad=0.)
         super().__init__(self.fig)
         self.setParent(parent)
-        self.ax = self.fig.add_subplot(111)
+        
+        self.ax = self.fig.add_axes([0,0,1,1])  # instead of add_subplot
+
+        self.fig.subplots_adjust(
+            left=0,
+            right=1,
+            bottom=0,
+            top=1
+        )
+
+        self.fig.patch.set_facecolor("#000000FC")
+        
         self.ax.set_title(title)
         self.title = title
         self.shape = None
