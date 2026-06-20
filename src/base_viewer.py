@@ -96,8 +96,21 @@ class SliceCanvas(FigureCanvas):
 
     def set_crosshair(self, x, y):
         if self.vline is None:
-            self.vline = self.ax.axvline(x, color='r')
-            self.hline = self.ax.axhline(y, color='r')
+            self.vline = self.ax.axvline(
+                x,
+                color=(1.0, 0.4, 0.4),
+                alpha=0.4,
+                linestyle='--',
+                linewidth=0.6
+            )
+
+            self.hline = self.ax.axhline(
+                y,
+                color=(1.0, 0.4, 0.4),
+                alpha=0.4,
+                linestyle='--',
+                linewidth=0.6
+            )
         else:
             self.vline.set_xdata([x,x])
             self.hline.set_ydata([y,y])
@@ -345,7 +358,7 @@ class ViewerApp(QtWidgets.QMainWindow):
 
         toolbar2.addSeparator()
 
-        self.upsample_checkbox = QtWidgets.QCheckBox("High Resolution: ")
+        self.upsample_checkbox = QtWidgets.QCheckBox("Resolution: ")
         self.upsample_checkbox.setChecked(True)
         self.upsample_checkbox.stateChanged.connect(self._toggle_upsample_checkbox)
         toolbar2.addWidget(self.upsample_checkbox)
@@ -362,7 +375,24 @@ class ViewerApp(QtWidgets.QMainWindow):
         self.upsample_slider_label = QtWidgets.QLabel(f" X {self.upsample_factor}  ")
         self.upsample_slider.valueChanged.connect(lambda value: self.upsample_slider_label.setText(f" X {self.upsample_factor}  "))
         toolbar2.addWidget(self.upsample_slider_label)
-        toolbar2.addWidget(self.upsample_slider)        
+        toolbar2.addWidget(self.upsample_slider)
+
+        toolbar2.addSeparator()
+
+        self.axial_resolution_checkbox = QtWidgets.QCheckBox("Axial ")
+        self.axial_resolution_checkbox.setChecked(True)
+        self.axial_resolution_checkbox.stateChanged.connect(self._update_all)
+        toolbar2.addWidget(self.axial_resolution_checkbox)
+
+        self.coronal_resolution_checkbox = QtWidgets.QCheckBox("Coronal ")
+        self.coronal_resolution_checkbox.setChecked(True)
+        self.coronal_resolution_checkbox.stateChanged.connect(self._update_all)
+        toolbar2.addWidget(self.coronal_resolution_checkbox)
+
+        self.sagittal_resolution_checkbox = QtWidgets.QCheckBox("Sagittal ")
+        self.sagittal_resolution_checkbox.setChecked(True)
+        self.sagittal_resolution_checkbox.stateChanged.connect(self._update_all)
+        toolbar2.addWidget(self.sagittal_resolution_checkbox)
 
     def _init_layout(self):
         icon_path = resource_path("resources/icons/app_icon.png")
@@ -450,7 +480,7 @@ class ViewerApp(QtWidgets.QMainWindow):
         slice2d = self.volume[:, :, self.pos[2]]
         slice2d = np.fliplr(slice2d.T)  # transpose for correct orientation
 
-        if self.upsample_enabled:
+        if self.upsample_enabled and self.axial_resolution_checkbox.isChecked():
             slice2d = fast_mri_slice_upsample(slice2d, self.upsample_factor)
 
         return slice2d, None
@@ -459,7 +489,7 @@ class ViewerApp(QtWidgets.QMainWindow):
         slice2d = self.volume[:, self.pos[1], :]
         slice2d = np.fliplr(slice2d.T)  # transpose for correct orientation
         
-        if self.upsample_enabled:
+        if self.upsample_enabled and self.coronal_resolution_checkbox.isChecked():
             slice2d = fast_mri_slice_upsample(slice2d, self.upsample_factor)
 
         return slice2d, None
@@ -468,7 +498,7 @@ class ViewerApp(QtWidgets.QMainWindow):
         slice2d = self.volume[self.pos[0], :, :]
         slice2d = np.fliplr(slice2d.T)  # transpose for correct orientation
         
-        if self.upsample_enabled:
+        if self.upsample_enabled and self.sagittal_resolution_checkbox.isChecked():
             slice2d = fast_mri_slice_upsample(slice2d, self.upsample_factor)
 
         return slice2d, None

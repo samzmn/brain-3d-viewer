@@ -165,15 +165,22 @@ class SliceCanvas(FigureCanvas):
         self.draw_idle()
 
     def set_crosshair(self, x, y):
-        # x0, x1 = self.ax.get_xlim()
-        # y0, y1 = self.ax.get_ylim()
-
-        # x = np.clip(x, x0, x1)
-        # y = np.clip(y, y0, y1)
-        # x,y are in pixel coordinates (cols, rows)
         if self.vline is None:
-            self.vline = self.ax.axvline(x, color='r')
-            self.hline = self.ax.axhline(y, color='r')
+            self.vline = self.ax.axvline(
+                x,
+                color=(1.0, 0.4, 0.4),
+                alpha=0.4,
+                linestyle='--',
+                linewidth=0.6
+            )
+
+            self.hline = self.ax.axhline(
+                y,
+                color=(1.0, 0.4, 0.4),
+                alpha=0.4,
+                linestyle='--',
+                linewidth=0.6
+            )
         else:
             self.vline.set_xdata([x,x])
             self.hline.set_ydata([y,y])
@@ -513,7 +520,24 @@ class ViewerApp(QtWidgets.QMainWindow):
         self.upsample_slider_label = QtWidgets.QLabel(f" X {self.upsample_factor}  ")
         self.upsample_slider.valueChanged.connect(lambda value: self.upsample_slider_label.setText(f" X {self.upsample_factor}  "))
         toolbar2.addWidget(self.upsample_slider_label)
-        toolbar2.addWidget(self.upsample_slider)        
+        toolbar2.addWidget(self.upsample_slider)
+        
+        toolbar2.addSeparator()
+
+        self.axial_resolution_checkbox = QtWidgets.QCheckBox("Axial ")
+        self.axial_resolution_checkbox.setChecked(True)
+        self.axial_resolution_checkbox.stateChanged.connect(self._update_all)
+        toolbar2.addWidget(self.axial_resolution_checkbox)
+
+        self.coronal_resolution_checkbox = QtWidgets.QCheckBox("Coronal ")
+        self.coronal_resolution_checkbox.setChecked(True)
+        self.coronal_resolution_checkbox.stateChanged.connect(self._update_all)
+        toolbar2.addWidget(self.coronal_resolution_checkbox)
+
+        self.sagittal_resolution_checkbox = QtWidgets.QCheckBox("Sagittal ")
+        self.sagittal_resolution_checkbox.setChecked(True)
+        self.sagittal_resolution_checkbox.stateChanged.connect(self._update_all)
+        toolbar2.addWidget(self.sagittal_resolution_checkbox)
 
         # Third toolbar ----------------------------
         toolbar3 = QtWidgets.QToolBar("Brush Tools", self)
@@ -681,12 +705,12 @@ class ViewerApp(QtWidgets.QMainWindow):
                 roi_mask = np.fliplr(roi_mask.T)
                 slice2d = self._apply_roi_filter(slice2d, roi_mask)
 
-        if self.upsample_enabled:
+        if self.upsample_enabled and self.axial_resolution_checkbox.isChecked():
             slice2d = fast_mri_slice_upsample(slice2d, self.upsample_factor)
 
         if self.seg_rgba is not None and self.seg_checkbox.isChecked():
             seg_slice2d = self._make_seg_overlay(self.seg_rgba[:, :, self.pos[2]])
-            if self.upsample_enabled:
+            if self.upsample_enabled and self.axial_resolution_checkbox.isChecked():
                 seg_slice2d = fast_seg_slice_upsample(seg_slice2d, self.upsample_factor)
         else:
             seg_slice2d = None
@@ -702,12 +726,12 @@ class ViewerApp(QtWidgets.QMainWindow):
                 roi_mask = np.fliplr(roi_mask.T)
                 slice2d = self._apply_roi_filter(slice2d, roi_mask)
 
-        if self.upsample_enabled:
+        if self.upsample_enabled and self.coronal_resolution_checkbox.isChecked():
             slice2d = fast_mri_slice_upsample(slice2d, self.upsample_factor)
 
         if self.seg_rgba is not None and self.seg_checkbox.isChecked():
             seg_slice2d = self._make_seg_overlay(self.seg_rgba[:, self.pos[1], :])
-            if self.upsample_enabled:
+            if self.upsample_enabled and self.coronal_resolution_checkbox.isChecked():
                 seg_slice2d = fast_seg_slice_upsample(seg_slice2d, self.upsample_factor)
         else:
             seg_slice2d = None
@@ -723,12 +747,12 @@ class ViewerApp(QtWidgets.QMainWindow):
                 roi_mask = np.fliplr(roi_mask.T)
                 slice2d = self._apply_roi_filter(slice2d, roi_mask)
 
-        if self.upsample_enabled:
+        if self.upsample_enabled and self.sagittal_resolution_checkbox.isChecked():
             slice2d = fast_mri_slice_upsample(slice2d, self.upsample_factor)
 
         if self.seg_rgba is not None and self.seg_checkbox.isChecked():
             seg_slice2d = self._make_seg_overlay(self.seg_rgba[self.pos[0], :, :])
-            if self.upsample_enabled:
+            if self.upsample_enabled and self.sagittal_resolution_checkbox.isChecked():
                 seg_slice2d = fast_seg_slice_upsample(seg_slice2d, self.upsample_factor)
         else:
             seg_slice2d = None
