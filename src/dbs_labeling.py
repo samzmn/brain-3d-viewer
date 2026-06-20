@@ -132,25 +132,15 @@ class SliceCanvas(FigureCanvas):
         self.draw_idle()
 
     def show_slice(self, slice2d, seg_slice2d=None, extend=None):
-        """slice2d: HxW (grayscale) or HxWx3 (RGB)"""
-        if slice2d.ndim == 3 and slice2d.shape[2] == 3:
-            slice2d = slice2d.astype(float)
-            if slice2d.max() > 1.0:
-                slice2d /= 255.0
-            cmap = None
-        else:
-            cmap = 'gray'
-
         if self.shape is None:
             self.shape = slice2d.shape[:2]
 
         if self.im is None:
             self.ax.axis('off')
-            self.im = self.ax.imshow(slice2d, cmap=cmap, aspect=self.aspect, origin='lower', interpolation='nearest', extent=extend)
+            self.im = self.ax.imshow(slice2d, cmap='gray', aspect=self.aspect, origin='lower', interpolation='nearest', extent=extend)
         else:
             self.im.set_data(slice2d)
-            if cmap:
-                self.im.set_clim(np.nanmin(slice2d), np.nanmax(slice2d))
+            self.im.set_clim(np.nanmin(slice2d), np.nanmax(slice2d))
         
         if self.seg is None:
             if seg_slice2d is not None:
@@ -169,17 +159,17 @@ class SliceCanvas(FigureCanvas):
             self.vline = self.ax.axvline(
                 x,
                 color=(1.0, 0.4, 0.4),
-                alpha=0.4,
+                alpha=0.6,
                 linestyle='--',
-                linewidth=0.6
+                linewidth=0.8
             )
 
             self.hline = self.ax.axhline(
                 y,
                 color=(1.0, 0.4, 0.4),
-                alpha=0.4,
+                alpha=0.6,
                 linestyle='--',
-                linewidth=0.6
+                linewidth=0.8
             )
         else:
             self.vline.set_xdata([x,x])
@@ -343,7 +333,6 @@ class ViewerApp(QtWidgets.QMainWindow):
         self.setWindowTitle('Brain Viewer with Segmentation Tools')
         self.volume = None
         self.affine = None
-        self.is_rgb = None
         self.shape = None  # (X, Y, Z)
         self.pos = None
         self.seg_volume = None
@@ -503,7 +492,7 @@ class ViewerApp(QtWidgets.QMainWindow):
 
         toolbar2.addSeparator()
 
-        self.upsample_checkbox = QtWidgets.QCheckBox("High Resolution: ")
+        self.upsample_checkbox = QtWidgets.QCheckBox("Resolution: ")
         self.upsample_checkbox.setChecked(True)
         self.upsample_checkbox.stateChanged.connect(self._toggle_upsample_checkbox)
         toolbar2.addWidget(self.upsample_checkbox)
@@ -696,7 +685,7 @@ class ViewerApp(QtWidgets.QMainWindow):
         return slice2d, None
     
     def _get_axial(self) -> Tuple[np.ndarray, np.ndarray]:
-        slice2d = self.volume[:, :, self.pos[2], :] if self.is_rgb else self.volume[:, :, self.pos[2]]
+        slice2d = self.volume[:, :, self.pos[2]]
         slice2d = np.fliplr(slice2d.T)  # transpose for correct orientation
 
         if self.contrast_checkbox.isChecked() and self.filter_checkbox.isChecked():
@@ -717,7 +706,7 @@ class ViewerApp(QtWidgets.QMainWindow):
         return slice2d, seg_slice2d
 
     def _get_coronal(self) -> Tuple[np.ndarray, np.ndarray]:
-        slice2d = self.volume[:, self.pos[1], :, :] if self.is_rgb else self.volume[:, self.pos[1], :]
+        slice2d = self.volume[:, self.pos[1], :]
         slice2d = np.fliplr(slice2d.T)  # transpose for correct orientation
         
         if self.contrast_checkbox.isChecked() and self.filter_checkbox.isChecked():
@@ -738,7 +727,7 @@ class ViewerApp(QtWidgets.QMainWindow):
         return slice2d, seg_slice2d
 
     def _get_sagittal(self) -> Tuple[np.ndarray, np.ndarray]:
-        slice2d = self.volume[self.pos[0], :, :, :] if self.is_rgb else self.volume[self.pos[0], :, :]
+        slice2d = self.volume[self.pos[0], :, :]
         slice2d = np.fliplr(slice2d.T)  # transpose for correct orientation
         
         if self.contrast_checkbox.isChecked() and self.filter_checkbox.isChecked():
@@ -1342,6 +1331,7 @@ class ViewerApp(QtWidgets.QMainWindow):
                 self.volume = self._apply_volume_normalization(self.t1_volume, self.brainmask, pmin=5, pmax=95)
             else:
                 self.volume = self._apply_volume_normalization(self.t2_volume, self.brainmask, pmin=3, pmax=97)
+                # self.volume = self.t2_volume
         else:
             if self.current_modality == "T1":
                 self.volume = self.t1_volume
@@ -1350,10 +1340,20 @@ class ViewerApp(QtWidgets.QMainWindow):
         self._update_all()
 
     def _apply_volume_normalization(self, volume: np.ndarray, brainmask: np.ndarray = None, pmin=1, pmax=99) -> np.ndarray:
+        volume = volume.copy()
         if brainmask is None:
             brainmask = np.ones_like(volume, dtype=bool)
         lo, hi = enhance.compute_volume_normalization(volume, brainmask, pmin, pmax)
-        return enhance.apply_volume_normalization(volume, lo, hi)
+        clipped = enhance.apply_volume_normalization(volume, lo, hi)
+        if self.current_modality == "T2":
+            return clipped
+        
+        mean = clipped.mean()
+        std = clipped.std()
+
+        volume[brainmask == 1] = (volume[brainmask == 1] - mean) / std
+
+        return volume
 
     def _toggle_upsample_checkbox(self, state):
         enabled = (state == QtCore.Qt.Checked)
@@ -1368,12 +1368,10 @@ class ViewerApp(QtWidgets.QMainWindow):
             self.upsample_slider.setEnabled(False)
             self.upsample_slider_label.setText(f" X {self.upsample_factor}  ")
 
-        # self._update_canvases_figures()
         self._update_all()
 
     def _upsample_slider_change(self, value):
         self.upsample_factor = float(value)
-        # self._update_canvases_figures()
         self._update_all()
 
     # ---------------- Load volume ----------------
@@ -1386,13 +1384,15 @@ class ViewerApp(QtWidgets.QMainWindow):
         
         patient_id = os.path.basename(path).split("_")[1]
         masks_path = os.path.join(os.path.dirname(path), "masks")
-        self.brainmask = load_volume(os.path.join(masks_path, f"brain_mask_of_subject_{patient_id}.nii.gz"))[0].astype(int)
-        self.second_roi_mask = load_volume(os.path.join(masks_path, f"second_subcortical_mask_of_subject_{patient_id}.nii.gz"))[0].astype(bool)
+        self.brainmask = load_volume(os.path.join(masks_path, f"brain_mask_of_subject_{patient_id}.nii.gz"))[0].astype(np.int8)
+        self.second_roi_mask = load_volume(os.path.join(masks_path, f"second_subcortical_mask_of_subject_{patient_id}.nii.gz"))[0].astype(np.int8)
 
-        self._load_new_volume(path, modality="T1")
+        data, aff = load_volume(path, np.float32)
+        self.t1_volume = data.astype(np.float32)
+        self.t1_affine = aff
+        self._load_new_volume(data, aff, modality="T1")
         self.t1_radio.setChecked(True)
         self.t1_radio.setEnabled(True)
-        self.current_modality = "T1"
         self._update_all()
 
     def _load_t2_volume(self):
@@ -1401,39 +1401,31 @@ class ViewerApp(QtWidgets.QMainWindow):
         )
         if not path:
             return
-        self._load_new_volume(path, modality="T2")
+        data, aff = load_volume(path, np.float32)
+        self.t2_volume = data.astype(np.float32)
+        self.t2_affine = aff
+        self._load_new_volume(data, aff, modality="T2")
         self.t2_radio.setChecked(True)
         self.t2_radio.setEnabled(True)
-        self.current_modality = "T2"
         self._update_all()
         
-    def _load_new_volume(self, path: str, modality: str = "T1"):
-        data, aff = load_volume(path)
+    def _load_new_volume(self, data: np.ndarray, aff: np.ndarray, modality: str = "T1"):
+        self.current_modality = modality
+        data = data.copy()
+        aff = aff.copy()
         # If shape changes, update sliders etc
-        if modality == "T1":
-            self.t1_volume = data.astype(float)
-            self.t1_affine = aff
-            if self.filter_checkbox.isChecked():
-                self.volume = self._apply_volume_normalization(self.t1_volume, self.brainmask)
-            else:
-                self.volume = self.t1_volume
-            self.affine = self.t1_affine
-        else:  # T2
-            self.t2_volume = data.astype(float)
-            self.t2_affine = aff
-            if self.filter_checkbox.isChecked():
-                self.volume = self._apply_volume_normalization(self.t2_volume, self.brainmask)
-            else:
-                self.volume = self.t2_volume
-            self.affine = self.t2_affine
+        if self.filter_checkbox.isChecked():
+            self.volume = self._apply_volume_normalization(data, self.brainmask, pmin=1, pmax=99)
+        else:
+            self.volume = data
+        self.affine = aff
 
         if self.t1_affine is not None and self.t2_affine is not None:
             if not np.allclose(self.t1_affine, self.t2_affine):
                 print("Warning: images are not aligned in world space")
 
-        self.shape = self.volume.shape[:3]
+        self.shape = self.volume.shape
         self.pos = [s // 2 for s in self.shape]  # initial crosshair at center
-        self.is_rgb = (self.volume.ndim == 4 and self.volume.shape[-1] == 3)
         
         sx = np.linalg.norm(self.affine[:3,0])   # spacing along i axis (rows of data)
         sy = np.linalg.norm(self.affine[:3,1])   # spacing along j axis (cols of data)
@@ -1557,7 +1549,6 @@ class ViewerApp(QtWidgets.QMainWindow):
     def _reset_volumes(self):
         self.volume = None
         self.affine = None
-        self.is_rgb = None
         self.shape = None
         self.pos = None
         self.seg_volume = None
@@ -1576,12 +1567,19 @@ class ViewerApp(QtWidgets.QMainWindow):
         self.upsample_factor = float(self._init_upsample_factor)
 
     def _test_init(self):
-        self._load_new_volume("./test_nifti_files/001/subject_001_T1_pre.nii.gz", modality="T1")
-        self._load_new_volume("./test_nifti_files/001/subject_001_T2_merged.nii.gz", modality="T2")
+        data, aff = load_volume("./test_nifti_files/001/subject_001_T1_pre.nii.gz", np.float32)
+        self.t1_volume = data
+        self.t1_affine = aff
+        self._load_new_volume(data, aff, modality="T1")
+        data, aff = load_volume("./test_nifti_files/001/subject_001_T2_merged.nii.gz", np.float32)
+        self.t2_volume = data
+        self.t2_affine = aff
+        self._load_new_volume(data, aff, modality="T2")
+
         self.t1_radio.setEnabled(True)
         self.t2_radio.setEnabled(True)
-        self.brainmask = load_volume("./test_nifti_files/001/masks/brain_mask_of_subject_001.nii.gz")[0].astype(int)
-        self.second_roi_mask = load_volume("./test_nifti_files/001/masks/second_subcortical_mask_of_subject_001.nii.gz")[0].astype(bool)
+        self.brainmask = load_volume("./test_nifti_files/001/masks/brain_mask_of_subject_001.nii.gz")[0].astype(np.int8)
+        self.second_roi_mask = load_volume("./test_nifti_files/001/masks/second_subcortical_mask_of_subject_001.nii.gz")[0].astype(np.int8)
         # self.third_roi_mask = load_volume("./test_nifti_files/001/masks/third_subcortical_mask_of_subject_001.nii.gz")[0].astype(int)
         self.filter_checkbox.setChecked(True)
         self.volume = self._apply_volume_normalization(self.t1_volume, self.brainmask)
@@ -1589,7 +1587,7 @@ class ViewerApp(QtWidgets.QMainWindow):
         # print(50 * "-")
         # print(self.axial_volume.shape)
         seg, aff = load_volume("./test_nifti_files/001/subject_001_structures_labeled.nii.gz")
-        self.seg_volume = seg.astype(int)
+        self.seg_volume = seg.astype(np.int8)
         labels = np.unique(self.seg_volume)
         rng = np.random.default_rng(0)
         self.label_colors = {

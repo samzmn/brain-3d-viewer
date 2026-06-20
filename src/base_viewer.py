@@ -249,6 +249,7 @@ class ViewerApp(QtWidgets.QMainWindow):
         self.affine = None
         self.shape = None  # (X, Y, Z)
         self.pos = None
+        self.is_rgb = None
 
         self.t1_volume = None
         self.t1_affine = None
@@ -477,7 +478,7 @@ class ViewerApp(QtWidgets.QMainWindow):
         return slice2d, None
 
     def _get_axial(self) -> Tuple[np.ndarray, np.ndarray]:
-        slice2d = self.volume[:, :, self.pos[2]]
+        slice2d = self.volume[:, :, self.pos[2], :] if self.is_rgb else self.volume[:, :, self.pos[2]]
         slice2d = np.fliplr(slice2d.T)  # transpose for correct orientation
 
         if self.upsample_enabled and self.axial_resolution_checkbox.isChecked():
@@ -486,7 +487,7 @@ class ViewerApp(QtWidgets.QMainWindow):
         return slice2d, None
 
     def _get_coronal(self) -> Tuple[np.ndarray, np.ndarray]:
-        slice2d = self.volume[:, self.pos[1], :]
+        slice2d = self.volume[:, self.pos[1], :, :] if self.is_rgb else self.volume[:, self.pos[1], :]
         slice2d = np.fliplr(slice2d.T)  # transpose for correct orientation
         
         if self.upsample_enabled and self.coronal_resolution_checkbox.isChecked():
@@ -495,7 +496,7 @@ class ViewerApp(QtWidgets.QMainWindow):
         return slice2d, None
 
     def _get_sagittal(self) -> Tuple[np.ndarray, np.ndarray]:
-        slice2d = self.volume[self.pos[0], :, :]
+        slice2d = self.volume[self.pos[0], :, :, :] if self.is_rgb else self.volume[self.pos[0], :, :]
         slice2d = np.fliplr(slice2d.T)  # transpose for correct orientation
         
         if self.upsample_enabled and self.sagittal_resolution_checkbox.isChecked():
@@ -902,7 +903,8 @@ class ViewerApp(QtWidgets.QMainWindow):
 
         self.shape = self.volume.shape[:3]
         self.pos = [s // 2 for s in self.shape]  # initial crosshair at center
-        
+        self.is_rgb = (self.volume.ndim == 4 and self.volume.shape[-1] == 3)
+
         sx = np.linalg.norm(self.affine[:3,0])   # spacing along i axis (rows of data)
         sy = np.linalg.norm(self.affine[:3,1])   # spacing along j axis (cols of data)
         sz = np.linalg.norm(self.affine[:3,2])   # spacing along k axis (slice thickness)
